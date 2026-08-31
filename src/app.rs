@@ -11,8 +11,10 @@ use crate::document::Document;
 use crate::markdown::{self, Heading, SearchHit};
 use crate::scroll::{ScrollMetrics, ScrollPane, ScrollSync};
 use crate::theme;
+use crate::zoom::ZoomLevel;
 
 const LAST_PATH_KEY: &str = "native-markdown.last-path";
+const ZOOM_KEY: &str = "native-markdown.zoom-factor";
 const READING_WIDTH: f32 = 760.0;
 const MIN_SPLIT_PANE_WIDTH: f32 = 320.0;
 
@@ -78,11 +80,14 @@ pub struct NativeMarkdownApp {
     scroll_sync: ScrollSync,
     source_scroll: ScrollMetrics,
     preview_scroll: ScrollMetrics,
+    zoom: ZoomLevel,
 }
 
 impl NativeMarkdownApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::apply(&cc.egui_ctx);
+        cc.egui_ctx
+            .options_mut(|options| options.zoom_with_keyboard = false);
 
         let last_path = cc
             .storage
@@ -114,6 +119,13 @@ impl NativeMarkdownApp {
         let analyzed_source = document.content.clone();
         let outline = markdown::headings(&analyzed_source);
         let recovery_available = Document::recovery_exists();
+        let zoom = cc
+            .storage
+            .and_then(|storage| storage.get_string(ZOOM_KEY))
+            .and_then(|factor| factor.parse::<f32>().ok())
+            .map(ZoomLevel::from_factor)
+            .unwrap_or_default();
+        cc.egui_ctx.set_zoom_factor(zoom.factor());
 
         Self {
             document,
@@ -139,6 +151,7 @@ impl NativeMarkdownApp {
             scroll_sync: ScrollSync::default(),
             source_scroll: ScrollMetrics::default(),
             preview_scroll: ScrollMetrics::default(),
+            zoom,
         }
     }
 
@@ -293,6 +306,35 @@ impl NativeMarkdownApp {
         }
     }
 
+    fn apply_zoom(&self, ctx: &egui::Context) {
+        ctx.set_zoom_factor(self.zoom.factor());
+    }
+
+    fn zoom_in(&mut self, ctx: &egui::Context) {
+        if self.zoom.zoom_in() {
+            self.apply_zoom(ctx);
+        }
+    }
+
+    fn zoom_out(&mut self, ctx: &egui::Context) {
+        if self.zoom.zoom_out() {
+            self.apply_zoom(ctx);
+        }
+    }
+
+    fn reset_zoom(&mut self, ctx: &egui::Context) {
+        if self.zoom.reset() {
+            self.apply_zoom(ctx);
+        }
+    }
+
+    fn handle_zoom_gesture(&mut self, ctx: &egui::Context) {
+        let delta = ctx.input(|input| input.zoom_delta());
+        if self.zoom.apply_gesture(delta) {
+            self.apply_zoom(ctx);
+        }
+    }
+
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         let command = |key| KeyboardShortcut::new(Modifiers::COMMAND, key);
         let command_shift = |key| {
@@ -305,9 +347,19 @@ impl NativeMarkdownApp {
                 key,
             )
         };
+        let mut zoom_step = 0_i8;
+        let mut reset_zoom = false;
 
         ctx.input_mut(|input| {
-            if input.consume_shortcut(&command(Key::O)) {
+            if input.consume_shortcut(&command(Key::Plus))
+                || input.consume_shortcut(&command(Key::Equals))
+            {
+                zoom_step = 1;
+            } else if input.consume_shortcut(&command(Key::Minus)) {
+                zoom_step = -1;
+            } else if input.consume_shortcut(&command(Key::Num0)) {
+                reset_zoom = true;
+            } else if input.consume_shortcut(&command(Key::O)) {
                 self.queue(Command::Action(PendingAction::OpenDialog));
             } else if input.consume_shortcut(&command(Key::N)) {
                 self.queue(Command::Action(PendingAction::New));
@@ -334,6 +386,14 @@ impl NativeMarkdownApp {
                 self.search_open = false;
             }
         });
+
+        if reset_zoom {
+            self.reset_zoom(ctx);
+        } else if zoom_step > 0 {
+            self.zoom_in(ctx);
+        } else if zoom_step < 0 {
+            self.zoom_out(ctx);
+        }
     }
 
     fn handle_dropped_files(&mut self, ctx: &egui::Context) {
@@ -402,6 +462,24 @@ impl NativeMarkdownApp {
                             if ui.button("Find in document").clicked() {
                                 self.search_open = true;
                                 self.focus_search = true;
+                                ui.close_menu();
+                            }
+                            ui.separator();
+                            ui.label(
+                                RichText::new(format!("Zoom: {}%", self.zoom.percent()))
+                                    .size(12.0)
+                                    .color(theme::MUTED),
+                            );
+                            if menu_item(ui, "Zoom in", "Ctrl++") {
+                                self.zoom_in(ctx);
+                                ui.close_menu();
+                            }
+                            if menu_item(ui, "Zoom out", "Ctrl+-") {
+                                self.zoom_out(ctx);
+                                ui.close_menu();
+                            }
+                            if menu_item(ui, "Reset zoom", "Ctrl+0") {
+                                self.reset_zoom(ctx);
                                 ui.close_menu();
                             }
                         });
@@ -991,10 +1069,11 @@ impl NativeMarkdownApp {
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                         ui.label(
                             RichText::new(format!(
-                                "{} words  ·  {} min read  ·  {}",
+                                "{} words  ·  {} min read  ·  {}  ·  {}%",
                                 words,
                                 minutes,
-                                self.view_mode.label()
+                                self.view_mode.label(),
+                                self.zoom.percent()
                             ))
                             .size(11.5)
                             .color(theme::MUTED),
@@ -1089,6 +1168,7 @@ impl NativeMarkdownApp {
 
 impl eframe::App for NativeMarkdownApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.handle_zoom_gesture(ctx);
         self.handle_shortcuts(ctx);
         self.handle_dropped_files(ctx);
 
@@ -1136,6 +1216,7 @@ impl eframe::App for NativeMarkdownApp {
         if let Some(path) = self.document.path.as_deref().or(self.last_path.as_deref()) {
             storage.set_string(LAST_PATH_KEY, path.to_string_lossy().into_owned());
         }
+        storage.set_string(ZOOM_KEY, self.zoom.factor().to_string());
     }
 }
 

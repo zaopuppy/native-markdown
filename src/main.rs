@@ -3,6 +3,7 @@ mod document;
 mod markdown;
 mod scroll;
 mod theme;
+mod zoom;
 
 use app::NativeMarkdownApp;
 use eframe::egui;

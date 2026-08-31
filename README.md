@@ -23,8 +23,9 @@ A quiet, reader-first Markdown desktop app built with Rust and egui. Documents o
 | Find | `Ctrl+F` |
 | Toggle preview/editing | `Ctrl+E` |
 | Preview / Split / Source | `Ctrl+1` / `Ctrl+2` / `Ctrl+3` |
+| Zoom in / out / reset | `Ctrl++` / `Ctrl+-` / `Ctrl+0` |
 
-Links require `Ctrl+Click` so reading never opens a browser accidentally.
+Use `Ctrl+mouse-wheel` or a pinch gesture for smooth zooming. Links require `Ctrl+Click` so reading never opens a browser accidentally.
 
 ## Building
 
