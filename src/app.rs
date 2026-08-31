@@ -13,6 +13,7 @@ use gpui_component::text::TextView;
 use gpui_component::{Selectable as _, Sizable as _, StyledExt as _, Theme};
 use rfd::AsyncFileDialog;
 
+use crate::benchmark::BenchmarkScenario;
 use crate::document::Document;
 use crate::image_cache::{BudgetImageCache, WARNING_THRESHOLD_BYTES};
 use crate::image_loader::DocumentImageRoot;
@@ -115,6 +116,44 @@ pub struct NativeMarkdownApp {
 }
 
 impl NativeMarkdownApp {
+    pub(crate) fn run_benchmark_step(
+        &mut self,
+        scenario: BenchmarkScenario,
+        step: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match scenario {
+            BenchmarkScenario::Idle | BenchmarkScenario::Scroll => {}
+            BenchmarkScenario::ViewModes => {
+                let mode = match step % 3 {
+                    0 => ViewMode::Preview,
+                    1 => ViewMode::Split,
+                    _ => ViewMode::Source,
+                };
+                self.set_view_mode(mode, cx);
+            }
+            BenchmarkScenario::Zoom
+            | BenchmarkScenario::ZoomSource
+            | BenchmarkScenario::ZoomSplit => {
+                match scenario {
+                    BenchmarkScenario::ZoomSource => self.set_view_mode(ViewMode::Source, cx),
+                    BenchmarkScenario::ZoomSplit => self.set_view_mode(ViewMode::Split, cx),
+                    _ => self.set_view_mode(ViewMode::Preview, cx),
+                }
+                let phase = step % 40;
+                let tenths = if phase <= 20 { 5 + phase } else { 45 - phase };
+                self.zoom = ZoomLevel::from_factor(tenths as f32 / 10.0);
+                self.apply_zoom(cx);
+            }
+            BenchmarkScenario::Reopen => {
+                if let Some(path) = self.document.path.clone() {
+                    self.open_path(path, window, cx);
+                }
+            }
+        }
+    }
+
     pub fn new(
         initial_path: Option<PathBuf>,
         image_root: DocumentImageRoot,

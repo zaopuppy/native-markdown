@@ -1,4 +1,5 @@
 mod app;
+mod benchmark;
 mod document;
 mod image_cache;
 mod image_loader;
@@ -14,6 +15,16 @@ use gpui_component::{Root, Theme};
 use image_loader::{DocumentImageClient, DocumentImageRoot};
 
 fn main() {
+    let benchmark_config = match benchmark::BenchmarkConfig::from_env() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("NATIVE_MARKDOWN_BENCHMARK event=error message={error:?}");
+            std::process::exit(2);
+        }
+    };
+    let benchmark_enabled = benchmark_config.is_some();
+    let benchmark_outcome = benchmark::new_outcome();
+    let outcome_for_app = benchmark_outcome.clone();
     let initial_path = std::env::args_os()
         .nth(1)
         .map(PathBuf::from)
@@ -46,6 +57,15 @@ fn main() {
                         let app = cx.new(|cx| {
                             NativeMarkdownApp::new(initial_path.clone(), image_root, window, cx)
                         });
+                        if let Some(config) = benchmark_config.clone() {
+                            benchmark::start(
+                                config,
+                                app.downgrade(),
+                                outcome_for_app.clone(),
+                                window,
+                                cx,
+                            );
+                        }
                         let weak_app = app.downgrade();
                         window.on_window_should_close(cx, move |window, cx| {
                             weak_app
@@ -66,6 +86,18 @@ fn main() {
         })
         .detach();
     });
+
+    if benchmark_enabled {
+        let outcome = benchmark_outcome
+            .lock()
+            .expect("benchmark outcome lock poisoned");
+        let exit_code = match outcome.as_ref() {
+            Some(Ok(report)) if report.passed => 0,
+            Some(Ok(_)) => 1,
+            Some(Err(_)) | None => 2,
+        };
+        std::process::exit(exit_code);
+    }
 }
 
 fn configure_theme(cx: &mut App) {

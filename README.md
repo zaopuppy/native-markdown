@@ -47,6 +47,19 @@ cargo run -- path/to/document.md
 ./target/release/native-markdown
 ```
 
+## Memory regression benchmark
+
+The Windows benchmark launches a fresh real application process for each scenario, records working set, private working set, and private bytes, then fails when a configured budget is exceeded:
+
+```powershell
+.\scripts\benchmark-memory.ps1 `
+  'path\to\document.md' `
+  -Scenario all `
+  -Seconds 5
+```
+
+Use `-Scenario zoom -Steps 5 -StepMs 300` for the minimal staged-zoom probe. The `scroll` scenario sends real wheel messages to the benchmark window. Defaults are 160 MiB peak private working set, 160 MiB peak private bytes, and 80 MiB private-byte growth; override them with `-MaxPrivateWorkingSetMiB`, `-MaxPrivateBytesMiB`, and `-MaxGrowthMiB`.
+
 ## Tech Stack
 
 - **GPUI**: GPU-accelerated native window and rendering runtime

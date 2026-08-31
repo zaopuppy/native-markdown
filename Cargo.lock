@@ -3593,6 +3593,7 @@ dependencies = [
  "rfd",
  "smol",
  "tempfile",
+ "windows-sys 0.59.0",
  "winresource",
 ]
 

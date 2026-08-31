@@ -16,6 +16,9 @@ rfd = "0.15"
 smol = "2"
 tempfile = "3.12"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_ProcessStatus", "Win32_System_Threading"] }
+
 [dev-dependencies]
 gpui = { version = "0.2.2", features = ["test-support"] }
 
