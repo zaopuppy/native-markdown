@@ -1,0 +1,12 @@
+[package]
+name = "native-markdown"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+egui = "0.29"
+eframe = { version = "0.29", features = ["default_fonts"] }
+egui_commonmark = { version = "0.18", features = ["better_syntax_highlighting"] }
+pulldown-cmark = "0.12"
+rfd = "0.15"
+tempfile = "3.12"

@@ -1,0 +1,27 @@
+# Rust build artifacts
+/target/
+
+# Local code index
+/.codegraph/
+
+# Rust tooling backups
+**/*.rs.bk
+
+# IDE and editor settings
+/.idea/
+/.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local logs and temporary files
+*.log
+*.tmp
+*.swp
+*~
