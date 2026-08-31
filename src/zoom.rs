@@ -7,7 +7,7 @@ pub struct ZoomLevel(f32);
 
 impl Default for ZoomLevel {
     fn default() -> Self {
-        Self(1.0)
+        Self::from_factor(1.0)
     }
 }
 

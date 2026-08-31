@@ -1,5 +1,6 @@
 # Rust build artifacts
 /target/
+/spikes/**/target/
 
 # Local code index
 /.codegraph/

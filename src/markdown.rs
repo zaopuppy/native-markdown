@@ -149,43 +149,6 @@ pub fn search(markdown: &str, query: &str, headings: &[Heading]) -> Vec<SearchHi
     hits
 }
 
-pub fn safe_preview_source(markdown: &str) -> String {
-    let mut replacements = Vec::new();
-    for (event, range) in Parser::new_ext(markdown, parser_options()).into_offset_iter() {
-        match event {
-            Event::Html(_) => replacements.push((range, true)),
-            Event::InlineHtml(_) => replacements.push((range, false)),
-            _ => {}
-        }
-    }
-
-    if replacements.is_empty() {
-        return markdown.to_owned();
-    }
-
-    let mut output = String::with_capacity(markdown.len() + replacements.len() * 8);
-    let mut cursor = 0;
-    for (range, block) in replacements {
-        if range.start < cursor {
-            continue;
-        }
-        output.push_str(&markdown[cursor..range.start]);
-        let raw = markdown[range.clone()].trim_end();
-        if block {
-            output.push_str("\n```html\n");
-            output.push_str(raw);
-            output.push_str("\n```\n");
-        } else {
-            output.push('`');
-            output.push_str(&raw.replace('`', "\\`"));
-            output.push('`');
-        }
-        cursor = range.end;
-    }
-    output.push_str(&markdown[cursor..]);
-    output
-}
-
 fn heading_level(level: HeadingLevel) -> u8 {
     match level {
         HeadingLevel::H1 => 1,
@@ -221,13 +184,6 @@ mod tests {
         let hits = search(source, "needle", &outline);
         assert_eq!(hits.len(), 2);
         assert_ne!(hits[0].section_index, hits[1].section_index);
-    }
-
-    #[test]
-    fn raw_html_is_displayed_as_code() {
-        let rendered = safe_preview_source("before <kbd>K</kbd> after");
-        assert!(rendered.contains("`<kbd>`"));
-        assert!(rendered.contains("`</kbd>`"));
     }
 
     #[test]

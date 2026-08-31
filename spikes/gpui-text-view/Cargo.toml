@@ -1,0 +1,17 @@
+[package]
+name = "markdown-spike-gpui-text-view"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyhow = "1"
+futures = "0.3"
+gpui = "0.2.2"
+gpui-component = "0.5.1"
+gpui_http_client = "0.2.2"
+smol = "2"
+windows-sys = { version = "0.59", features = ["Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,16 +1,18 @@
 # Native Markdown
 
-A quiet, reader-first Markdown desktop app built with Rust and egui. Documents open in a polished native preview; editing tools appear only when you ask for them.
+A quiet, reader-first Markdown desktop app built with Rust and GPUI Component. Documents open in a native, virtualized preview without a browser or WebView.
 
 ## Features
 
 - **Reader-first preview**: Preview is the default, with optional split and source-only modes
-- **Synchronized split view**: Source and preview have independent scrollbars and track the same relative reading position
-- **Native GFM rendering**: Headings, tables, task lists, strikethrough, links, local images, footnotes, and highlighted code blocks
+- **Preview and source modes**: Switch between preview, split, and source-only layouts
+- **Native Markdown rendering**: Headings, tables, task lists, strikethrough, links, local images, highlighted code blocks, and simple inline HTML
 - **Document outline**: Collapsible heading navigation for long documents
-- **Find**: Search rendered text or highlight matches in the source editor
+- **Find**: Search rendered text and jump between matching sections
 - **Safe file lifecycle**: Atomic saves, Save As, dirty-state warnings, visible errors, and background recovery
-- **Desktop integration**: Native dialogs, drag-and-drop, command-line paths, and last-document reopening
+- **Desktop integration**: Native dialogs, drag-and-drop, and command-line paths
+- **Local-image safety**: Relative images are restricted to the active document directory; remote images are disabled by default
+- **Bounded image cache**: 48 MiB soft budget, temporary overage while scrolling, idle LRU cleanup, and a 160 MiB hard limit; no disk cache
 - **Reading metadata**: Word count and estimated reading time
 
 ## Shortcuts
@@ -25,7 +27,7 @@ A quiet, reader-first Markdown desktop app built with Rust and egui. Documents o
 | Preview / Split / Source | `Ctrl+1` / `Ctrl+2` / `Ctrl+3` |
 | Zoom in / out / reset | `Ctrl++` / `Ctrl+-` / `Ctrl+0` |
 
-Use `Ctrl+mouse-wheel` or a pinch gesture for smooth zooming. Links require `Ctrl+Click` so reading never opens a browser accidentally.
+Use `Ctrl+mouse-wheel` for smooth zooming. Set `NATIVE_MARKDOWN_REMOTE_IMAGES=1` before launch only when a document is allowed to load remote images.
 
 ## Building
 
@@ -47,6 +49,7 @@ cargo run -- path/to/document.md
 
 ## Tech Stack
 
-- **egui**: Immediate mode GUI library
-- **egui_commonmark / pulldown-cmark**: Native Markdown parsing and rendering
+- **GPUI**: GPU-accelerated native window and rendering runtime
+- **GPUI Component `TextView`**: Virtualized Markdown, simple HTML, and image rendering
+- **pulldown-cmark**: Outline, search, and reading metadata analysis
 - **rfd**: Native file dialogs
