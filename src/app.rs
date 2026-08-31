@@ -873,19 +873,6 @@ impl NativeMarkdownApp {
     }
 
     fn editor(&mut self, ui: &mut egui::Ui, in_split_view: bool) {
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new("SOURCE")
-                    .size(10.0)
-                    .strong()
-                    .color(theme::BRASS),
-            );
-            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                ui.label(RichText::new("Markdown").size(10.0).color(theme::MUTED));
-            });
-        });
-        ui.add_space(5.0);
-
         let query = if self.search_open {
             self.search_query.clone()
         } else {
