@@ -47,9 +47,9 @@ fn main() {
                             NativeMarkdownApp::new(initial_path.clone(), image_root, window, cx)
                         });
                         let weak_app = app.downgrade();
-                        window.on_window_should_close(cx, move |_, cx| {
+                        window.on_window_should_close(cx, move |window, cx| {
                             weak_app
-                                .update(cx, |app, cx| app.should_close(cx))
+                                .update(cx, |app, cx| app.should_close(window, cx))
                                 .unwrap_or(true)
                         });
                         cx.new(|cx| Root::new(app, window, cx))

@@ -1,19 +1,17 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
     actions, div, image_cache, prelude::*, px, rgb, App, AppContext, Context, Entity,
-    ExternalPaths, IntoElement, KeyBinding, Render, ScrollWheelEvent, SharedString, Subscription,
-    Window,
+    ExternalPaths, IntoElement, KeyBinding, PromptButton, PromptLevel, Render, ScrollWheelEvent,
+    SharedString, Subscription, Window,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::text::TextView;
 use gpui_component::{Selectable as _, Sizable as _, StyledExt as _, Theme};
-use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
+use rfd::AsyncFileDialog;
 
 use crate::document::Document;
 use crate::image_cache::{BudgetImageCache, WARNING_THRESHOLD_BYTES};
@@ -84,26 +82,13 @@ struct Notice {
     created_at: Instant,
 }
 
-#[derive(Clone, Default)]
-struct DialogActivity(Arc<AtomicBool>);
-
-impl DialogActivity {
-    fn enter(&self) -> DialogActivityGuard {
-        self.0.store(true, Ordering::Release);
-        DialogActivityGuard(self.clone())
-    }
-
-    fn is_active(&self) -> bool {
-        self.0.load(Ordering::Acquire)
-    }
-}
-
-struct DialogActivityGuard(DialogActivity);
-
-impl Drop for DialogActivityGuard {
-    fn drop(&mut self) {
-        self.0 .0.store(false, Ordering::Release);
-    }
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DocumentAction {
+    New,
+    OpenDialog,
+    OpenPath(PathBuf),
+    Recover,
+    CloseWindow,
 }
 
 pub struct NativeMarkdownApp {
@@ -123,7 +108,7 @@ pub struct NativeMarkdownApp {
     last_path: Option<PathBuf>,
     recovery_available: bool,
     notice: Option<Notice>,
-    dialog_activity: DialogActivity,
+    dialog_in_flight: bool,
     image_cache: Entity<BudgetImageCache>,
     image_root: DocumentImageRoot,
     _subscriptions: Vec<Subscription>,
@@ -164,8 +149,6 @@ impl NativeMarkdownApp {
                 .clean_on_escape()
         });
         let image_cache = BudgetImageCache::new(cx);
-        let dialog_activity = DialogActivity::default();
-
         let subscriptions = vec![
             cx.subscribe_in(
                 &editor,
@@ -194,12 +177,8 @@ impl NativeMarkdownApp {
             ),
         ];
 
-        let timer_dialog_activity = dialog_activity.clone();
         cx.spawn(async move |this, cx| loop {
             smol::Timer::after(Duration::from_secs(1)).await;
-            if timer_dialog_activity.is_active() {
-                continue;
-            }
             if this
                 .update(cx, |this, cx| {
                     if let Err(error) = this.document.maybe_write_recovery() {
@@ -243,19 +222,20 @@ impl NativeMarkdownApp {
             last_path,
             recovery_available: Document::recovery_exists(),
             notice,
-            dialog_activity,
+            dialog_in_flight: false,
             image_cache,
             image_root,
             _subscriptions: subscriptions,
         }
     }
 
-    pub fn should_close(&mut self, _: &mut Context<Self>) -> bool {
-        if self.confirm_unsaved_changes() {
+    pub fn should_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.document.is_dirty() || self.dialog_in_flight {
+            self.request_document_action(DocumentAction::CloseWindow, window, cx);
+            false
+        } else {
             Document::clear_recovery();
             true
-        } else {
-            false
         }
     }
 
@@ -300,49 +280,108 @@ impl NativeMarkdownApp {
         cx.notify();
     }
 
-    fn confirm_unsaved_changes(&mut self) -> bool {
+    /// The only entry point for actions that can replace the current document.
+    ///
+    /// GPUI owns the application state through a `RefCell`. A blocking native dialog would run a
+    /// nested Windows message loop while that state is mutably borrowed, allowing cursor and timer
+    /// tasks to re-enter GPUI and panic. Keep every prompt launched from this workflow asynchronous.
+    fn request_document_action(
+        &mut self,
+        action: DocumentAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.dialog_in_flight {
+            return;
+        }
         if !self.document.is_dirty() {
-            return true;
+            self.perform_document_action(action, window, cx);
+            return;
         }
 
-        let _dialog_guard = self.dialog_activity.enter();
-        match MessageDialog::new()
-            .set_level(MessageLevel::Warning)
-            .set_title("Unsaved changes")
-            .set_description("Keep the changes to this document?")
-            .set_buttons(MessageButtons::YesNoCancel)
-            .show()
-        {
-            MessageDialogResult::Yes => self.save_current(),
-            MessageDialogResult::No => {
-                Document::clear_recovery();
-                true
-            }
-            _ => false,
-        }
+        self.dialog_in_flight = true;
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            "Unsaved changes",
+            Some("Keep the changes to this document?"),
+            &[
+                PromptButton::ok("Save"),
+                PromptButton::new("Don't Save"),
+                PromptButton::cancel("Cancel"),
+            ],
+            cx,
+        );
+        let app = cx.entity().downgrade();
+        window
+            .spawn(cx, async move |cx| {
+                let answer = answer.await.ok();
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        app.dialog_in_flight = false;
+                        match answer {
+                            Some(0) => app.save_before(action, window, cx),
+                            Some(1) => app.perform_document_action(action, window, cx),
+                            _ => cx.notify(),
+                        }
+                    })
+                    .ok();
+                })
+                .ok();
+            })
+            .detach();
     }
 
-    fn new_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.confirm_unsaved_changes() {
-            Document::clear_recovery();
-            self.replace_document(Document::new_document(), window, cx);
-            self.view_mode = ViewMode::Split;
-            self.set_notice("New document", false);
+    fn perform_document_action(
+        &mut self,
+        action: DocumentAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            DocumentAction::New => {
+                Document::clear_recovery();
+                self.replace_document(Document::new_document(), window, cx);
+                self.view_mode = ViewMode::Split;
+                self.set_notice("New document", false);
+            }
+            DocumentAction::OpenDialog => self.open_dialog(window, cx),
+            DocumentAction::OpenPath(path) => self.open_path(path, window, cx),
+            DocumentAction::Recover => self.recover(window, cx),
+            DocumentAction::CloseWindow => {
+                Document::clear_recovery();
+                window.remove_window();
+            }
         }
     }
 
     fn open_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.confirm_unsaved_changes() {
+        if self.dialog_in_flight {
             return;
         }
-        let _dialog_guard = self.dialog_activity.enter();
-        let path = rfd::FileDialog::new()
+        self.dialog_in_flight = true;
+        // `AsyncFileDialog` runs the Windows dialog without retaining GPUI's application borrow.
+        let selection = AsyncFileDialog::new()
             .add_filter("Markdown", &["md", "markdown", "mdown", "mkd"])
             .add_filter("Text", &["txt"])
             .pick_file();
-        if let Some(path) = path {
-            self.open_path(path, window, cx);
-        }
+        let app = cx.entity().downgrade();
+        window
+            .spawn(cx, async move |cx| {
+                let path = selection.await.map(|file| file.path().to_path_buf());
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        app.dialog_in_flight = false;
+                        if let Some(path) = path {
+                            app.open_path(path, window, cx);
+                        } else {
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                })
+                .ok();
+            })
+            .detach();
     }
 
     fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -357,9 +396,6 @@ impl NativeMarkdownApp {
     }
 
     fn recover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.confirm_unsaved_changes() {
-            return;
-        }
         match Document::recover() {
             Ok(document) => {
                 self.replace_document(document, window, cx);
@@ -371,10 +407,19 @@ impl NativeMarkdownApp {
         }
     }
 
-    fn save_current(&mut self) -> bool {
-        if self.document.path.is_none() {
-            return self.save_as();
+    fn save_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.dialog_in_flight {
+            return;
         }
+        if self.document.path.is_none() {
+            self.save_as(None, window, cx);
+            return;
+        }
+        self.save_existing();
+        cx.notify();
+    }
+
+    fn save_existing(&mut self) -> bool {
         match self.document.save() {
             Ok(()) => {
                 self.last_path.clone_from(&self.document.path);
@@ -390,33 +435,73 @@ impl NativeMarkdownApp {
         }
     }
 
-    fn save_as(&mut self) -> bool {
-        let mut dialog = rfd::FileDialog::new()
+    fn save_before(&mut self, action: DocumentAction, window: &mut Window, cx: &mut Context<Self>) {
+        if self.document.path.is_some() {
+            if self.save_existing() {
+                self.perform_document_action(action, window, cx);
+            } else {
+                cx.notify();
+            }
+        } else {
+            self.save_as(Some(action), window, cx);
+        }
+    }
+
+    fn save_as(
+        &mut self,
+        continuation: Option<DocumentAction>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.dialog_in_flight {
+            return;
+        }
+        let mut dialog = AsyncFileDialog::new()
             .add_filter("Markdown", &["md", "markdown"])
             .set_file_name(self.document.display_name());
         if let Some(parent) = self.document.path.as_deref().and_then(Path::parent) {
             dialog = dialog.set_directory(parent);
         }
-        let _dialog_guard = self.dialog_activity.enter();
-        let Some(mut path) = dialog.save_file() else {
-            return false;
-        };
-        if path.extension().is_none() {
-            path.set_extension("md");
-        }
-        match self.document.save_as(path.clone()) {
-            Ok(()) => {
-                self.last_path = Some(path);
-                self.image_root
-                    .set_document_path(self.document.path.as_deref());
-                self.set_notice("Saved", false);
-                true
-            }
-            Err(error) => {
-                self.set_notice(format!("Could not save document: {error}"), true);
-                false
-            }
-        }
+        self.dialog_in_flight = true;
+        // Saving must use the same non-blocking boundary as opening and confirmation prompts.
+        let selection = dialog.save_file();
+        let app = cx.entity().downgrade();
+        window
+            .spawn(cx, async move |cx| {
+                let path = selection.await.map(|file| file.path().to_path_buf());
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        app.dialog_in_flight = false;
+                        let Some(mut path) = path else {
+                            cx.notify();
+                            return;
+                        };
+                        if path.extension().is_none() {
+                            path.set_extension("md");
+                        }
+                        match app.document.save_as(path.clone()) {
+                            Ok(()) => {
+                                app.last_path = Some(path);
+                                app.image_root
+                                    .set_document_path(app.document.path.as_deref());
+                                app.set_notice("Saved", false);
+                                if let Some(action) = continuation {
+                                    app.perform_document_action(action, window, cx);
+                                } else {
+                                    cx.notify();
+                                }
+                            }
+                            Err(error) => {
+                                app.set_notice(format!("Could not save document: {error}"), true);
+                                cx.notify();
+                            }
+                        }
+                    })
+                    .ok();
+                })
+                .ok();
+            })
+            .detach();
     }
 
     fn set_notice(&mut self, text: impl Into<String>, is_error: bool) {
@@ -507,21 +592,19 @@ impl NativeMarkdownApp {
     }
 
     fn on_new(&mut self, _: &NewDocument, window: &mut Window, cx: &mut Context<Self>) {
-        self.new_document(window, cx);
+        self.request_document_action(DocumentAction::New, window, cx);
     }
 
     fn on_open(&mut self, _: &OpenDocument, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_dialog(window, cx);
+        self.request_document_action(DocumentAction::OpenDialog, window, cx);
     }
 
-    fn on_save(&mut self, _: &SaveDocument, _: &mut Window, cx: &mut Context<Self>) {
-        self.save_current();
-        cx.notify();
+    fn on_save(&mut self, _: &SaveDocument, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_current(window, cx);
     }
 
-    fn on_save_as(&mut self, _: &SaveDocumentAs, _: &mut Window, cx: &mut Context<Self>) {
-        self.save_as();
-        cx.notify();
+    fn on_save_as(&mut self, _: &SaveDocumentAs, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_as(None, window, cx);
     }
 
     fn on_find(&mut self, _: &FindDocument, window: &mut Window, cx: &mut Context<Self>) {
@@ -570,23 +653,24 @@ impl NativeMarkdownApp {
                     .label("New")
                     .small()
                     .ghost()
-                    .on_click(cx.listener(|this, _, window, cx| this.new_document(window, cx))),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.request_document_action(DocumentAction::New, window, cx)
+                    })),
             )
             .child(
                 Button::new("open-document")
                     .label("Open")
                     .small()
                     .ghost()
-                    .on_click(cx.listener(|this, _, window, cx| this.open_dialog(window, cx))),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.request_document_action(DocumentAction::OpenDialog, window, cx)
+                    })),
             )
             .child(
                 Button::new("save-document")
                     .label("Save")
                     .small()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.save_current();
-                        cx.notify();
-                    })),
+                    .on_click(cx.listener(|this, _, window, cx| this.save_current(window, cx))),
             )
             .child(div().w(px(1.0)).h(px(24.0)).mx_2().bg(rgb(0xd3c8b5)))
             .child(
@@ -833,7 +917,9 @@ impl NativeMarkdownApp {
                 Button::new("welcome-open")
                     .label("Open document")
                     .primary()
-                    .on_click(cx.listener(|this, _, window, cx| this.open_dialog(window, cx))),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.request_document_action(DocumentAction::OpenDialog, window, cx)
+                    })),
             )
             .when_some(
                 self.last_path.clone().filter(|path| path.is_file()),
@@ -847,9 +933,11 @@ impl NativeMarkdownApp {
                         Button::new("welcome-reopen")
                             .label(format!("Reopen {name}"))
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                if this.confirm_unsaved_changes() {
-                                    this.open_path(path.clone(), window, cx);
-                                }
+                                this.request_document_action(
+                                    DocumentAction::OpenPath(path.clone()),
+                                    window,
+                                    cx,
+                                );
                             })),
                     )
                 },
@@ -858,7 +946,9 @@ impl NativeMarkdownApp {
                 view.child(
                     Button::new("welcome-recover")
                         .label("Recover unsaved draft")
-                        .on_click(cx.listener(|this, _, window, cx| this.recover(window, cx))),
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.request_document_action(DocumentAction::Recover, window, cx)
+                        })),
                 )
             })
             .child(
@@ -950,9 +1040,7 @@ impl NativeMarkdownApp {
 
     fn handle_drop(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(path) = paths.paths().iter().find(|path| path.is_file()).cloned() {
-            if self.confirm_unsaved_changes() {
-                self.open_path(path, window, cx);
-            }
+            self.request_document_action(DocumentAction::OpenPath(path), window, cx);
         }
     }
 }
@@ -1006,17 +1094,55 @@ mod tests {
     use super::*;
     use gpui::{size, TestAppContext};
 
-    #[test]
-    fn native_dialog_activity_blocks_background_updates() {
-        let activity = DialogActivity::default();
-        assert!(!activity.is_active());
+    #[gpui::test]
+    fn unsaved_document_action_does_not_block_gpui_tasks(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let image_root = DocumentImageRoot::default();
+        let (app, cx) =
+            cx.add_window_view(|window, cx| NativeMarkdownApp::new(None, image_root, window, cx));
 
-        {
-            let _guard = activity.enter();
-            assert!(activity.is_active());
-        }
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.document.content = "changed while editing".to_owned();
+                app.view_mode = ViewMode::Split;
+                app.request_document_action(DocumentAction::OpenDialog, window, cx);
+            });
+        });
 
-        assert!(!activity.is_active());
+        assert!(cx.has_pending_prompt());
+        cx.executor().advance_clock(Duration::from_millis(1_100));
+        cx.run_until_parked();
+        assert!(cx.has_pending_prompt());
+
+        cx.simulate_prompt_answer("Cancel");
+        cx.run_until_parked();
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.document.content, "changed while editing");
+            assert!(!app.dialog_in_flight);
+        });
+    }
+
+    #[gpui::test]
+    fn discarding_changes_continues_the_requested_action(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let image_root = DocumentImageRoot::default();
+        let (app, cx) =
+            cx.add_window_view(|window, cx| NativeMarkdownApp::new(None, image_root, window, cx));
+
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.document.content = "discard me".to_owned();
+                app.request_document_action(DocumentAction::New, window, cx);
+            });
+        });
+        cx.simulate_prompt_answer("Don't Save");
+        cx.run_until_parked();
+
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.document.content, "# Untitled\n\n");
+            assert_eq!(app.view_mode, ViewMode::Split);
+            assert!(!app.dialog_in_flight);
+        });
     }
 
     #[gpui::test]
