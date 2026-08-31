@@ -122,6 +122,8 @@ impl NativeMarkdownApp {
         &mut self,
         scenario: BenchmarkScenario,
         step: u64,
+        switch_step: u64,
+        secondary_document: Option<&Path>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -153,6 +155,18 @@ impl NativeMarkdownApp {
                     self.open_path(path, window, cx);
                 }
             }
+            BenchmarkScenario::ImageRelease if step == switch_step => {
+                let images_loaded = self.image_root.load_count();
+                let estimated_image_mib =
+                    self.image_cache.read(cx).status().estimated_bytes as f64 / (1024.0 * 1024.0);
+                if let Some(path) = secondary_document {
+                    self.open_path(path.to_path_buf(), window, cx);
+                    println!(
+                        "NATIVE_MARKDOWN_BENCHMARK event=document_switched images_loaded={images_loaded} estimated_image_mib={estimated_image_mib:.2}"
+                    );
+                }
+            }
+            BenchmarkScenario::ImageRelease => {}
         }
     }
 

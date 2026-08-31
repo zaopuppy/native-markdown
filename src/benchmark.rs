@@ -1,7 +1,7 @@
-use std::time::Duration;
 use std::{
+    path::PathBuf,
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use gpui::{App, WeakEntity, Window};
@@ -19,6 +19,7 @@ pub enum BenchmarkScenario {
     ZoomSplit,
     Reopen,
     Scroll,
+    ImageRelease,
 }
 
 impl BenchmarkScenario {
@@ -31,8 +32,9 @@ impl BenchmarkScenario {
             "zoom-split" => Ok(Self::ZoomSplit),
             "reopen" => Ok(Self::Reopen),
             "scroll" => Ok(Self::Scroll),
+            "image-release" => Ok(Self::ImageRelease),
             _ => Err(format!(
-                "invalid NATIVE_MARKDOWN_BENCHMARK value {value:?}; expected idle, view-modes, zoom, zoom-source, zoom-split, reopen, or scroll"
+                "invalid NATIVE_MARKDOWN_BENCHMARK value {value:?}; expected idle, view-modes, zoom, zoom-source, zoom-split, reopen, scroll, or image-release"
             )),
         }
     }
@@ -46,6 +48,7 @@ impl BenchmarkScenario {
             Self::ZoomSplit => "zoom-split",
             Self::Reopen => "reopen",
             Self::Scroll => "scroll",
+            Self::ImageRelease => "image-release",
         }
     }
 }
@@ -57,6 +60,8 @@ pub struct BenchmarkConfig {
     pub warmup: Duration,
     pub step_interval: Duration,
     pub max_steps: Option<u64>,
+    pub secondary_document: Option<PathBuf>,
+    pub switch_step: u64,
     pub max_private_working_set_bytes: u64,
     pub max_private_bytes: u64,
     pub max_growth_bytes: u64,
@@ -72,8 +77,19 @@ impl BenchmarkConfig {
             return Ok(None);
         };
 
+        let scenario = BenchmarkScenario::parse(&scenario)?;
+        let secondary_document = lookup("NATIVE_MARKDOWN_BENCHMARK_SECONDARY_DOCUMENT")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        if scenario == BenchmarkScenario::ImageRelease && secondary_document.is_none() {
+            return Err(
+                "NATIVE_MARKDOWN_BENCHMARK_SECONDARY_DOCUMENT is required for image-release"
+                    .to_owned(),
+            );
+        }
+
         Ok(Some(Self {
-            scenario: BenchmarkScenario::parse(&scenario)?,
+            scenario,
             duration: Duration::from_secs(parse_bounded(
                 &mut lookup,
                 "NATIVE_MARKDOWN_BENCHMARK_SECONDS",
@@ -98,6 +114,14 @@ impl BenchmarkConfig {
             max_steps: parse_optional_bounded(
                 &mut lookup,
                 "NATIVE_MARKDOWN_BENCHMARK_STEPS",
+                1,
+                1_000_000,
+            )?,
+            secondary_document,
+            switch_step: parse_bounded(
+                &mut lookup,
+                "NATIVE_MARKDOWN_BENCHMARK_SWITCH_STEP",
+                100,
                 1,
                 1_000_000,
             )?,
@@ -138,6 +162,8 @@ impl BenchmarkConfig {
             warmup: Duration::ZERO,
             step_interval: Duration::from_millis(10),
             max_steps: None,
+            secondary_document: None,
+            switch_step: 100,
             max_private_working_set_bytes: mib(max_private_working_set_mib),
             max_private_bytes: mib(max_private_bytes_mib),
             max_growth_bytes: mib(max_growth_mib),
@@ -366,7 +392,14 @@ pub fn start(
                 }
                 if let Err(error) = cx.update(|window, cx| {
                     app.update(cx, |app, cx| {
-                        app.run_benchmark_step(config.scenario, step, window, cx)
+                        app.run_benchmark_step(
+                            config.scenario,
+                            step,
+                            config.switch_step,
+                            config.secondary_document.as_deref(),
+                            window,
+                            cx,
+                        )
                     })
                 }) {
                     finish_with_error(&outcome, &format!("benchmark UI update failed: {error}"));
@@ -424,6 +457,8 @@ fn as_mib(bytes: u64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::{BenchmarkConfig, BenchmarkMetrics, BenchmarkScenario, MemorySample};
 
     const MIB: u64 = super::MIB;
@@ -441,6 +476,8 @@ mod tests {
             "NATIVE_MARKDOWN_BENCHMARK_SECONDS" => Some("7".into()),
             "NATIVE_MARKDOWN_BENCHMARK_STEP_MS" => Some("40".into()),
             "NATIVE_MARKDOWN_BENCHMARK_STEPS" => Some("12".into()),
+            "NATIVE_MARKDOWN_BENCHMARK_SECONDARY_DOCUMENT" => Some("C:\\notes\\plain.md".into()),
+            "NATIVE_MARKDOWN_BENCHMARK_SWITCH_STEP" => Some("25".into()),
             "NATIVE_MARKDOWN_BENCHMARK_MAX_PRIVATE_WS_MIB" => Some("120".into()),
             "NATIVE_MARKDOWN_BENCHMARK_MAX_PRIVATE_BYTES_MIB" => Some("150".into()),
             "NATIVE_MARKDOWN_BENCHMARK_MAX_GROWTH_MIB" => Some("30".into()),
@@ -453,6 +490,11 @@ mod tests {
         assert_eq!(config.duration.as_secs(), 7);
         assert_eq!(config.step_interval.as_millis(), 40);
         assert_eq!(config.max_steps, Some(12));
+        assert_eq!(
+            config.secondary_document,
+            Some(PathBuf::from("C:\\notes\\plain.md"))
+        );
+        assert_eq!(config.switch_step, 25);
         assert_eq!(config.max_private_working_set_bytes, 120 * MIB);
         assert_eq!(config.max_private_bytes, 150 * MIB);
         assert_eq!(config.max_growth_bytes, 30 * MIB);
@@ -508,5 +550,16 @@ mod tests {
             BenchmarkScenario::parse("zoom-split").unwrap(),
             BenchmarkScenario::ZoomSplit
         );
+    }
+
+    #[test]
+    fn image_release_requires_a_secondary_document() {
+        let error = BenchmarkConfig::from_lookup(|name| match name {
+            "NATIVE_MARKDOWN_BENCHMARK" => Some("image-release".into()),
+            _ => None,
+        })
+        .unwrap_err();
+
+        assert!(error.contains("SECONDARY_DOCUMENT"));
     }
 }

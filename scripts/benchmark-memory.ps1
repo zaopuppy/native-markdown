@@ -2,8 +2,10 @@ param(
     [Parameter(Mandatory = $true, Position = 0)]
     [string]$Document,
 
-    [ValidateSet('idle', 'view-modes', 'zoom', 'zoom-source', 'zoom-split', 'reopen', 'scroll', 'all')]
+    [ValidateSet('idle', 'view-modes', 'zoom', 'zoom-source', 'zoom-split', 'reopen', 'scroll', 'image-release', 'all')]
     [string]$Scenario = 'all',
+
+    [string]$SecondaryDocument,
 
     [ValidateSet('debug', 'release')]
     [string]$Profile = 'release',
@@ -20,6 +22,9 @@ param(
     [ValidateRange(0, 1000000)]
     [int]$Steps = 0,
 
+    [ValidateRange(1, 1000000)]
+    [int]$SwitchStep = 100,
+
     [ValidateRange(1, 65536)]
     [int]$MaxPrivateWorkingSetMiB = 160,
 
@@ -35,6 +40,11 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $documentPath = (Resolve-Path -LiteralPath $Document).Path
+$secondaryDocumentPath = if ($SecondaryDocument) {
+    (Resolve-Path -LiteralPath $SecondaryDocument).Path
+} else {
+    $null
+}
 $profileArguments = if ($Profile -eq 'release') { @('--release') } else { @() }
 $binary = Join-Path $repoRoot "target\$Profile\native-markdown.exe"
 $scenarios = if ($Scenario -eq 'all') {
@@ -59,7 +69,11 @@ if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) {
     throw "benchmark binary does not exist: $binary"
 }
 
-if ('scroll' -in $scenarios) {
+if ($Scenario -eq 'image-release' -and -not $secondaryDocumentPath) {
+    throw '-SecondaryDocument is required for the image-release scenario'
+}
+
+if ('scroll' -in $scenarios -or 'image-release' -in $scenarios) {
     if ($env:OS -ne 'Windows_NT') {
         throw 'the scroll scenario currently requires Windows'
     }
@@ -70,8 +84,31 @@ using System.Runtime.InteropServices;
 
 namespace NativeMarkdown {
     public static class BenchmarkInput {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct Rect {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
         [DllImport("user32.dll", SetLastError = true)]
-        public static extern bool PostMessage(IntPtr hWnd, uint message, IntPtr wParam, IntPtr lParam);
+        private static extern bool PostMessage(IntPtr hWnd, uint message, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool GetWindowRect(IntPtr hWnd, out Rect rect);
+
+        public static bool PostWheelAtCenter(IntPtr hWnd, int delta) {
+            Rect rect;
+            if (!GetWindowRect(hWnd, out rect)) {
+                return false;
+            }
+            int x = rect.Left + (rect.Right - rect.Left) / 2;
+            int y = rect.Top + (rect.Bottom - rect.Top) / 2;
+            long wParam = ((long)(ushort)(short)delta) << 16;
+            long lParam = ((long)(ushort)y << 16) | (ushort)x;
+            return PostMessage(hWnd, 0x020A, new IntPtr(wParam), new IntPtr(lParam));
+        }
     }
 }
 '@
@@ -95,6 +132,10 @@ function Start-BenchmarkProcess {
     $startInfo.Environment['NATIVE_MARKDOWN_BENCHMARK_MAX_PRIVATE_WS_MIB'] = $MaxPrivateWorkingSetMiB.ToString()
     $startInfo.Environment['NATIVE_MARKDOWN_BENCHMARK_MAX_PRIVATE_BYTES_MIB'] = $MaxPrivateBytesMiB.ToString()
     $startInfo.Environment['NATIVE_MARKDOWN_BENCHMARK_MAX_GROWTH_MIB'] = $MaxGrowthMiB.ToString()
+    $startInfo.Environment['NATIVE_MARKDOWN_BENCHMARK_SWITCH_STEP'] = $SwitchStep.ToString()
+    if ($secondaryDocumentPath) {
+        $startInfo.Environment['NATIVE_MARKDOWN_BENCHMARK_SECONDARY_DOCUMENT'] = $secondaryDocumentPath
+    }
     if ($Steps -gt 0) {
         $startInfo.Environment['NATIVE_MARKDOWN_BENCHMARK_STEPS'] = $Steps.ToString()
     } else {
@@ -110,7 +151,10 @@ function Start-BenchmarkProcess {
 }
 
 function Send-ScrollUntilExit {
-    param([Diagnostics.Process]$Process)
+    param(
+        [Diagnostics.Process]$Process,
+        [switch]$OnlyDown
+    )
 
     $windowDeadline = [DateTime]::UtcNow.AddSeconds(10)
     do {
@@ -126,18 +170,13 @@ function Send-ScrollUntilExit {
     }
 
     Start-Sleep -Milliseconds ($WarmupMs + 100)
-    $message = [uint32]0x020A
-    $down = [IntPtr]::new([int64]0x00000000FF880000)
-    $up = [IntPtr]::new([int64]0x0000000000780000)
     $index = 0
     $accepted = 0
     while (-not $Process.HasExited) {
-        $wParam = if (([math]::Floor($index / 30) % 2) -eq 0) { $down } else { $up }
-        if ([NativeMarkdown.BenchmarkInput]::PostMessage(
+        $delta = if ($OnlyDown -or ([math]::Floor($index / 30) % 2) -eq 0) { -120 } else { 120 }
+        if ([NativeMarkdown.BenchmarkInput]::PostWheelAtCenter(
             $Process.MainWindowHandle,
-            $message,
-            $wParam,
-            [IntPtr]::Zero
+            $delta
         )) {
             $accepted++
         }
@@ -153,9 +192,9 @@ foreach ($benchmarkScenario in $scenarios) {
     Write-Output "NATIVE_MARKDOWN_BENCHMARK_RUN scenario=$benchmarkScenario profile=$Profile"
     $process = Start-BenchmarkProcess -BenchmarkScenario $benchmarkScenario
     try {
-        if ($benchmarkScenario -eq 'scroll') {
-            $input = Send-ScrollUntilExit -Process $process
-            Write-Output "NATIVE_MARKDOWN_BENCHMARK_INPUT scenario=scroll sent=$($input.Sent) accepted=$($input.Accepted)"
+        if ($benchmarkScenario -eq 'scroll' -or $benchmarkScenario -eq 'image-release') {
+            $input = Send-ScrollUntilExit -Process $process -OnlyDown:($benchmarkScenario -eq 'image-release')
+            Write-Output "NATIVE_MARKDOWN_BENCHMARK_INPUT scenario=$benchmarkScenario sent=$($input.Sent) accepted=$($input.Accepted)"
         }
 
         $timeoutMs = $WarmupMs + ($Seconds * 1000) + 15000
