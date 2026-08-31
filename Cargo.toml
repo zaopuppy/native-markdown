@@ -2,6 +2,7 @@
 name = "native-markdown"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
 
 [dependencies]
 anyhow = "1"
@@ -17,3 +18,6 @@ tempfile = "3.12"
 
 [dev-dependencies]
 gpui = { version = "0.2.2", features = ["test-support"] }
+
+[build-dependencies]
+winresource = "0.1.31"
