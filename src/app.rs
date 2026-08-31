@@ -16,7 +16,7 @@ use gpui_component::{Selectable as _, Sizable as _, StyledExt as _, Theme};
 use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 
 use crate::document::Document;
-use crate::image_cache::{BudgetImageCache, SOFT_BUDGET_BYTES};
+use crate::image_cache::{BudgetImageCache, WARNING_THRESHOLD_BYTES};
 use crate::image_loader::DocumentImageRoot;
 use crate::markdown::{self, Heading, SearchHit};
 use crate::zoom::ZoomLevel;
@@ -194,8 +194,6 @@ impl NativeMarkdownApp {
             ),
         ];
 
-        let timer_image_cache = image_cache.clone();
-        let timer_window = window.window_handle();
         let timer_dialog_activity = dialog_activity.clone();
         cx.spawn(async move |this, cx| loop {
             smol::Timer::after(Duration::from_secs(1)).await;
@@ -221,9 +219,6 @@ impl NativeMarkdownApp {
             {
                 break;
             }
-            let _ = cx.update_window(timer_window, |_, window, cx| {
-                timer_image_cache.update(cx, |cache, cx| cache.trim_if_idle(window, cx))
-            });
         })
         .detach();
 
@@ -495,7 +490,6 @@ impl NativeMarkdownApp {
         cx: &mut Context<Self>,
     ) {
         if !event.modifiers.control {
-            self.image_cache.update(cx, |cache, _| cache.note_scroll());
             return;
         }
 
@@ -907,10 +901,10 @@ impl NativeMarkdownApp {
         let minutes = markdown::reading_minutes(words);
         let image_cache = self.image_cache.read(cx).status();
         let image_cache_mib = image_cache.estimated_bytes as f64 / 1024.0 / 1024.0;
-        let image_status = if image_cache.over_soft_budget {
+        let image_status = if image_cache.over_warning_threshold {
             format!(
-                " · image cache {image_cache_mib:.1} MiB (temporarily above {} MiB)",
-                SOFT_BUDGET_BYTES / 1024 / 1024
+                " · image cache {image_cache_mib:.1} MiB (above {} MiB; retained for smooth scrolling)",
+                WARNING_THRESHOLD_BYTES / 1024 / 1024
             )
         } else if image_cache.estimated_bytes > 0 {
             format!(" · image cache {image_cache_mib:.1} MiB")

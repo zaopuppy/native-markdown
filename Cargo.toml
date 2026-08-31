@@ -9,6 +9,7 @@ futures = "0.3"
 gpui = "0.2.2"
 gpui-component = "0.5.1"
 gpui_http_client = "0.2.2"
+image = { version = "0.25.10", default-features = false }
 pulldown-cmark = "0.12"
 rfd = "0.15"
 smol = "2"

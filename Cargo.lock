@@ -3588,6 +3588,7 @@ dependencies = [
  "gpui",
  "gpui-component",
  "gpui_http_client",
+ "image",
  "pulldown-cmark",
  "rfd",
  "smol",
