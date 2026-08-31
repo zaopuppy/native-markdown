@@ -98,6 +98,8 @@ pub struct NativeMarkdownApp {
     search_input: Entity<InputState>,
     markdown: SharedString,
     outline: Vec<Heading>,
+    word_count: usize,
+    reading_minutes: usize,
     search_hits: Vec<SearchHit>,
     search_query: String,
     active_hit: usize,
@@ -220,18 +222,9 @@ impl NativeMarkdownApp {
             smol::Timer::after(Duration::from_secs(1)).await;
             if this
                 .update(cx, |this, cx| {
-                    if let Err(error) = this.document.maybe_write_recovery() {
-                        this.set_notice(format!("Recovery copy failed: {error}"), true);
+                    if this.run_background_maintenance() {
+                        cx.notify();
                     }
-                    this.recovery_available = Document::recovery_exists();
-                    if this
-                        .notice
-                        .as_ref()
-                        .is_some_and(|notice| notice.created_at.elapsed() > Duration::from_secs(5))
-                    {
-                        this.notice = None;
-                    }
-                    cx.notify();
                 })
                 .is_err()
             {
@@ -242,6 +235,8 @@ impl NativeMarkdownApp {
 
         let markdown: SharedString = document.content.clone().into();
         let outline = markdown::headings(&document.content);
+        let word_count = markdown::word_count(&document.content);
+        let reading_minutes = markdown::reading_minutes(word_count);
         let last_path = document.path.clone().or(initial_path);
 
         Self {
@@ -250,6 +245,8 @@ impl NativeMarkdownApp {
             search_input,
             markdown,
             outline,
+            word_count,
+            reading_minutes,
             search_hits: Vec::new(),
             search_query: String::new(),
             active_hit: 0,
@@ -281,10 +278,36 @@ impl NativeMarkdownApp {
     fn refresh_analysis(&mut self) {
         self.markdown = self.document.content.clone().into();
         self.outline = markdown::headings(&self.document.content);
+        self.word_count = markdown::word_count(&self.document.content);
+        self.reading_minutes = markdown::reading_minutes(self.word_count);
         self.refresh_search();
         self.preview_section = self.preview_section.filter(|section| {
             *section < markdown::sections(&self.document.content, &self.outline).len()
         });
+    }
+
+    fn run_background_maintenance(&mut self) -> bool {
+        let mut visible_change = false;
+        if let Err(error) = self.document.maybe_write_recovery() {
+            self.set_notice(format!("Recovery copy failed: {error}"), true);
+            visible_change = true;
+        }
+
+        let recovery_available = Document::recovery_exists();
+        if self.recovery_available != recovery_available {
+            self.recovery_available = recovery_available;
+            visible_change = true;
+        }
+
+        if self
+            .notice
+            .as_ref()
+            .is_some_and(|notice| notice.created_at.elapsed() > Duration::from_secs(5))
+        {
+            self.notice = None;
+            visible_change = true;
+        }
+        visible_change
     }
 
     fn refresh_search(&mut self) {
@@ -1026,8 +1049,6 @@ impl NativeMarkdownApp {
     }
 
     fn status_bar(&self, cx: &Context<Self>) -> impl IntoElement {
-        let words = markdown::word_count(&self.document.content);
-        let minutes = markdown::reading_minutes(words);
         let image_cache = self.image_cache.read(cx).status();
         let image_cache_mib = image_cache.estimated_bytes as f64 / 1024.0 / 1024.0;
         let image_status = if image_cache.over_warning_threshold {
@@ -1070,7 +1091,9 @@ impl NativeMarkdownApp {
             .text_color(rgb(0x70685b))
             .child(div().text_color(left_color).child(left))
             .child(format!(
-                "{words} words · {minutes} min read · {} · {}% · {} local images{image_status}",
+                "{} words · {} min read · {} · {}% · {} local images{image_status}",
+                self.word_count,
+                self.reading_minutes,
                 self.view_mode.label(),
                 self.zoom.percent(),
                 self.image_root.load_count(),
@@ -1226,5 +1249,44 @@ mod tests {
         assert_eq!(ViewMode::Preview.label(), "Preview");
         assert_eq!(ViewMode::Split.label(), "Split");
         assert_eq!(ViewMode::Source.label(), "Source");
+    }
+
+    #[gpui::test]
+    fn background_maintenance_only_redraws_for_visible_changes(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let image_root = DocumentImageRoot::default();
+        let (app, cx) =
+            cx.add_window_view(|window, cx| NativeMarkdownApp::new(None, image_root, window, cx));
+
+        app.update(cx, |app, _| {
+            assert!(!app.run_background_maintenance());
+            app.notice = Some(Notice {
+                text: "Expired".to_owned(),
+                is_error: false,
+                created_at: Instant::now() - Duration::from_secs(6),
+            });
+            assert!(app.run_background_maintenance());
+            assert!(app.notice.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn reading_metadata_is_cached_with_document_analysis(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let image_root = DocumentImageRoot::default();
+        let (app, cx) =
+            cx.add_window_view(|window, cx| NativeMarkdownApp::new(None, image_root, window, cx));
+
+        app.update(cx, |app, _| {
+            app.document.content = "# Title\n\none two three".to_owned();
+            app.refresh_analysis();
+            assert_eq!(app.word_count, 4);
+            assert_eq!(app.reading_minutes, 1);
+
+            app.document.content = "# Title\n\none two three four five".to_owned();
+            app.refresh_analysis();
+            assert_eq!(app.word_count, 6);
+            assert_eq!(app.reading_minutes, 1);
+        });
     }
 }
