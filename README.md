@@ -5,6 +5,7 @@ A quiet, reader-first Markdown desktop app built with Rust and egui. Documents o
 ## Features
 
 - **Reader-first preview**: Preview is the default, with optional split and source-only modes
+- **Synchronized split view**: Source and preview have independent scrollbars and track the same relative reading position
 - **Native GFM rendering**: Headings, tables, task lists, strikethrough, links, local images, footnotes, and highlighted code blocks
 - **Document outline**: Collapsible heading navigation for long documents
 - **Find**: Search rendered text or highlight matches in the source editor

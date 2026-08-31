@@ -9,10 +9,12 @@ use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 
 use crate::document::Document;
 use crate::markdown::{self, Heading, SearchHit};
+use crate::scroll::{ScrollMetrics, ScrollPane, ScrollSync};
 use crate::theme;
 
 const LAST_PATH_KEY: &str = "native-markdown.last-path";
 const READING_WIDTH: f32 = 760.0;
+const MIN_SPLIT_PANE_WIDTH: f32 = 320.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ViewMode {
@@ -72,6 +74,10 @@ pub struct NativeMarkdownApp {
     notice: Option<Notice>,
     last_title: String,
     focus_search: bool,
+    synchronize_scroll: bool,
+    scroll_sync: ScrollSync,
+    source_scroll: ScrollMetrics,
+    preview_scroll: ScrollMetrics,
 }
 
 impl NativeMarkdownApp {
@@ -129,6 +135,10 @@ impl NativeMarkdownApp {
             notice,
             last_title: String::new(),
             focus_search: false,
+            synchronize_scroll: true,
+            scroll_sync: ScrollSync::default(),
+            source_scroll: ScrollMetrics::default(),
+            preview_scroll: ScrollMetrics::default(),
         }
     }
 
@@ -154,6 +164,7 @@ impl NativeMarkdownApp {
                 self.search_open = false;
                 self.outline_open = false;
                 self.preview_target = None;
+                self.scroll_sync.reset();
                 self.recovery_available = false;
                 Document::clear_recovery();
                 self.set_notice("Document opened", false);
@@ -225,6 +236,7 @@ impl NativeMarkdownApp {
                 self.view_mode = ViewMode::Split;
                 self.outline_open = false;
                 self.search_open = false;
+                self.scroll_sync.reset();
                 self.refresh_analysis();
             }
             PendingAction::OpenDialog => self.open_dialog(),
@@ -381,6 +393,12 @@ impl NativeMarkdownApp {
                             }
                             ui.separator();
                             ui.checkbox(&mut self.outline_open, "Document outline");
+                            if ui
+                                .checkbox(&mut self.synchronize_scroll, "Synchronize scrolling")
+                                .changed()
+                            {
+                                self.scroll_sync.reset();
+                            }
                             if ui.button("Find in document").clicked() {
                                 self.search_open = true;
                                 self.focus_search = true;
@@ -441,6 +459,17 @@ impl NativeMarkdownApp {
                             && ui.selectable_label(self.outline_open, "Outline").clicked()
                         {
                             self.outline_open = !self.outline_open;
+                        }
+                        if self.view_mode == ViewMode::Split
+                            && ui
+                                .selectable_label(self.synchronize_scroll, "Sync scroll")
+                                .on_hover_text(
+                                    "Keep source and preview at the same reading position",
+                                )
+                                .clicked()
+                        {
+                            self.synchronize_scroll = !self.synchronize_scroll;
+                            self.scroll_sync.reset();
                         }
                         ui.separator();
                         for mode in [ViewMode::Source, ViewMode::Split, ViewMode::Preview] {
@@ -551,6 +580,7 @@ impl NativeMarkdownApp {
                 .search_hits
                 .get(self.active_hit)
                 .map(|hit| hit.section_index);
+            self.scroll_sync.reset();
         }
     }
 
@@ -569,6 +599,7 @@ impl NativeMarkdownApp {
                 .search_hits
                 .get(self.active_hit)
                 .map(|hit| hit.section_index);
+            self.scroll_sync.reset();
         }
     }
 
@@ -632,6 +663,7 @@ impl NativeMarkdownApp {
                                 self.preview_target = sections.iter().position(|section| {
                                     section.heading_index == Some(heading_index)
                                 });
+                                self.scroll_sync.reset();
                             }
                         });
                     }
@@ -655,9 +687,10 @@ impl NativeMarkdownApp {
         };
 
         if effective_mode == ViewMode::Split {
+            let available_width = ctx.available_rect().width();
             egui::SidePanel::left("source_panel")
-                .default_width(ctx.available_rect().width() * 0.44)
-                .width_range(320.0..=680.0)
+                .default_width(available_width * 0.5)
+                .width_range(split_source_width_range(available_width))
                 .resizable(true)
                 .frame(
                     egui::Frame::none()
@@ -665,7 +698,7 @@ impl NativeMarkdownApp {
                         .inner_margin(egui::Margin::symmetric(14.0, 14.0))
                         .stroke(egui::Stroke::new(1.0, theme::RULE)),
                 )
-                .show(ctx, |ui| self.editor(ui));
+                .show(ctx, |ui| self.editor(ui, true));
         }
 
         egui::CentralPanel::default()
@@ -683,10 +716,12 @@ impl NativeMarkdownApp {
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
                         ui.add_space(14.0);
-                        ui.vertical(|ui| self.editor(ui));
+                        ui.vertical(|ui| self.editor(ui, false));
                     });
                 }
-                ViewMode::Preview | ViewMode::Split => self.preview(ui),
+                ViewMode::Preview | ViewMode::Split => {
+                    self.preview(ui, effective_mode == ViewMode::Split)
+                }
             });
     }
 
@@ -759,7 +794,7 @@ impl NativeMarkdownApp {
         });
     }
 
-    fn editor(&mut self, ui: &mut egui::Ui) {
+    fn editor(&mut self, ui: &mut egui::Ui, in_split_view: bool) {
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new("SOURCE")
@@ -778,27 +813,69 @@ impl NativeMarkdownApp {
         } else {
             String::new()
         };
+        let viewport_height = ui.available_height();
+        let editor_height = source_editor_height(&self.document.content, viewport_height);
         let mut layouter = move |ui: &egui::Ui, text: &str, wrap_width: f32| {
             let job = editor_layout(text, &query, wrap_width);
             ui.fonts(|fonts| fonts.layout_job(job))
         };
-        let response = ui.add_sized(
-            ui.available_size(),
-            egui::TextEdit::multiline(&mut self.document.content)
-                .code_editor()
-                .desired_width(f32::INFINITY)
-                .margin(Vec2::new(12.0, 12.0))
-                .frame(false)
-                .layouter(&mut layouter),
+
+        let sync_from_preview = in_split_view
+            && self.synchronize_scroll
+            && self.scroll_sync.driver() == Some(ScrollPane::Preview);
+        let mut scroll_area = egui::ScrollArea::vertical()
+            .id_salt("source_scroll")
+            .auto_shrink([false, false]);
+        if sync_from_preview {
+            scroll_area = scroll_area.vertical_scroll_offset(self.scroll_sync.target_offset(
+                self.source_scroll.content_height,
+                self.source_scroll.viewport_height,
+            ));
+        }
+
+        let output = scroll_area.show(ui, |ui| {
+            ui.add_sized(
+                [ui.available_width(), editor_height],
+                egui::TextEdit::multiline(&mut self.document.content)
+                    .code_editor()
+                    .desired_width(f32::INFINITY)
+                    .margin(Vec2::new(12.0, 12.0))
+                    .frame(false)
+                    .layouter(&mut layouter),
+            )
+            .changed()
+        });
+
+        let previous_offset = self.source_scroll.offset;
+        self.source_scroll = ScrollMetrics::new(
+            output.state.offset.y,
+            output.content_size.y,
+            output.inner_rect.height(),
         );
-        if response.changed() {
+        if in_split_view
+            && self.synchronize_scroll
+            && pane_was_scrolled(
+                ui.ctx(),
+                output.inner_rect,
+                previous_offset,
+                self.source_scroll.offset,
+            )
+        {
+            self.scroll_sync
+                .update_from(ScrollPane::Source, self.source_scroll);
+            ui.ctx().request_repaint();
+        }
+        if output.inner {
             self.markdown_cache = CommonMarkCache::default();
         }
     }
 
-    fn preview(&mut self, ui: &mut egui::Ui) {
+    fn preview(&mut self, ui: &mut egui::Ui, in_split_view: bool) {
         let sections = markdown::sections(&self.document.content, &self.outline);
         let target = self.preview_target.take();
+        if target.is_some() {
+            self.scroll_sync.reset();
+        }
         let base_uri = self
             .document
             .path
@@ -806,42 +883,73 @@ impl NativeMarkdownApp {
             .and_then(Path::parent)
             .map(file_uri_base);
 
-        egui::ScrollArea::vertical()
+        let sync_from_source = in_split_view
+            && self.synchronize_scroll
+            && target.is_none()
+            && self.scroll_sync.driver() == Some(ScrollPane::Source);
+        let mut scroll_area = egui::ScrollArea::vertical()
             .id_salt("preview_scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                let available = ui.available_width();
-                let content_width = available.min(READING_WIDTH);
-                let gutter = ((available - content_width) / 2.0).max(18.0);
-                ui.horizontal(|ui| {
-                    ui.add_space(gutter);
-                    ui.vertical(|ui| {
-                        ui.set_width(content_width - gutter.min(18.0));
-                        ui.add_space(34.0);
-                        for (section_index, section) in sections.iter().enumerate() {
-                            let anchor = ui.allocate_response(
-                                Vec2::new(ui.available_width(), 1.0),
-                                Sense::hover(),
-                            );
-                            if target == Some(section_index) {
-                                anchor.scroll_to_me(Some(Align::Min));
-                            }
-                            let source = markdown::safe_preview_source(
-                                &self.document.content[section.range.clone()],
-                            );
-                            let mut viewer = CommonMarkViewer::new()
-                                .max_image_width(Some(ui.available_width() as usize))
-                                .show_alt_text_on_hover(true);
-                            if let Some(base_uri) = &base_uri {
-                                viewer = viewer.default_implicit_uri_scheme(base_uri.clone());
-                            }
-                            viewer.show(ui, &mut self.markdown_cache, &source);
-                            ui.add_space(9.0);
+            .auto_shrink([false, false]);
+        if sync_from_source {
+            scroll_area = scroll_area.vertical_scroll_offset(self.scroll_sync.target_offset(
+                self.preview_scroll.content_height,
+                self.preview_scroll.viewport_height,
+            ));
+        }
+
+        let output = scroll_area.show(ui, |ui| {
+            let available = ui.available_width();
+            let content_width = available.min(READING_WIDTH);
+            let gutter = ((available - content_width) / 2.0).max(18.0);
+            ui.horizontal(|ui| {
+                ui.add_space(gutter);
+                ui.vertical(|ui| {
+                    ui.set_width(content_width - gutter.min(18.0));
+                    ui.add_space(34.0);
+                    for (section_index, section) in sections.iter().enumerate() {
+                        let anchor = ui.allocate_response(
+                            Vec2::new(ui.available_width(), 1.0),
+                            Sense::hover(),
+                        );
+                        if target == Some(section_index) {
+                            anchor.scroll_to_me(Some(Align::Min));
                         }
-                        ui.add_space(70.0);
-                    });
+                        let source = markdown::safe_preview_source(
+                            &self.document.content[section.range.clone()],
+                        );
+                        let mut viewer = CommonMarkViewer::new()
+                            .max_image_width(Some(ui.available_width() as usize))
+                            .show_alt_text_on_hover(true);
+                        if let Some(base_uri) = &base_uri {
+                            viewer = viewer.default_implicit_uri_scheme(base_uri.clone());
+                        }
+                        viewer.show(ui, &mut self.markdown_cache, &source);
+                        ui.add_space(9.0);
+                    }
+                    ui.add_space(70.0);
                 });
             });
+        });
+
+        let previous_offset = self.preview_scroll.offset;
+        self.preview_scroll = ScrollMetrics::new(
+            output.state.offset.y,
+            output.content_size.y,
+            output.inner_rect.height(),
+        );
+        if in_split_view
+            && self.synchronize_scroll
+            && pane_was_scrolled(
+                ui.ctx(),
+                output.inner_rect,
+                previous_offset,
+                self.preview_scroll.offset,
+            )
+        {
+            self.scroll_sync
+                .update_from(ScrollPane::Preview, self.preview_scroll);
+            ui.ctx().request_repaint();
+        }
     }
 
     fn status_bar(&mut self, ctx: &egui::Context) {
@@ -1031,6 +1139,34 @@ impl eframe::App for NativeMarkdownApp {
     }
 }
 
+fn pane_was_scrolled(
+    ctx: &egui::Context,
+    pane_rect: egui::Rect,
+    previous_offset: f32,
+    current_offset: f32,
+) -> bool {
+    if (current_offset - previous_offset).abs() <= 0.5 {
+        return false;
+    }
+
+    ctx.input(|input| {
+        let pointer_is_over = input
+            .pointer
+            .hover_pos()
+            .is_some_and(|position| pane_rect.expand(16.0).contains(position));
+        pointer_is_over
+            && (input.raw_scroll_delta.y.abs() > f32::EPSILON || input.pointer.primary_down())
+    })
+}
+
+fn source_editor_height(source: &str, viewport_height: f32) -> f32 {
+    ((source.lines().count() + 2) as f32 * 21.0 + 24.0).max(viewport_height)
+}
+
+fn split_source_width_range(available_width: f32) -> std::ops::RangeInclusive<f32> {
+    MIN_SPLIT_PANE_WIDTH..=(available_width - MIN_SPLIT_PANE_WIDTH).max(MIN_SPLIT_PANE_WIDTH)
+}
+
 fn menu_item(ui: &mut egui::Ui, label: &str, shortcut: &str) -> bool {
     ui.horizontal(|ui| {
         let clicked = ui.button(label).clicked();
@@ -1098,5 +1234,41 @@ impl RichTextStrength for RichText {
         } else {
             self
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_source_content_exceeds_the_editor_viewport() {
+        let source = (0..200)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(source_editor_height(&source, 500.0) > 4_000.0);
+    }
+
+    #[test]
+    fn short_source_content_still_fills_the_editor_viewport() {
+        assert_eq!(source_editor_height("# Short", 500.0), 500.0);
+    }
+
+    #[test]
+    fn split_divider_can_reach_the_center_of_a_wide_window() {
+        let available_width = 1_800.0;
+        let limits = split_source_width_range(available_width);
+
+        assert!(*limits.end() >= available_width / 2.0);
+    }
+
+    #[test]
+    fn split_divider_always_leaves_room_for_the_preview() {
+        let available_width = 900.0;
+        let limits = split_source_width_range(available_width);
+
+        assert!(*limits.end() <= available_width - MIN_SPLIT_PANE_WIDTH);
     }
 }

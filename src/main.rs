@@ -1,6 +1,7 @@
 mod app;
 mod document;
 mod markdown;
+mod scroll;
 mod theme;
 
 use app::NativeMarkdownApp;
