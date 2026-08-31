@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     actions, div, image_cache, prelude::*, px, rgb, App, AppContext, Context, Entity,
-    ExternalPaths, IntoElement, KeyBinding, PromptButton, PromptLevel, Render, ScrollWheelEvent,
-    SharedString, Subscription, Window,
+    ExternalPaths, ImgResourceLoader, IntoElement, KeyBinding, PromptButton, PromptLevel, Render,
+    Resource, ScrollWheelEvent, SharedString, Subscription, Window,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -338,12 +338,11 @@ impl NativeMarkdownApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.release_document_images(window, cx);
         self.document = document;
         self.last_path.clone_from(&self.document.path);
         self.image_root
             .set_document_path(self.document.path.as_deref());
-        self.image_cache
-            .update(cx, |cache, cx| cache.clear(window, cx));
         self.preview_section = None;
         self.search_open = false;
         self.outline_open = false;
@@ -354,6 +353,18 @@ impl NativeMarkdownApp {
         self.refresh_analysis();
         self.recovery_available = Document::recovery_exists();
         cx.notify();
+    }
+
+    fn release_document_images(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.image_cache
+            .update(cx, |cache, cx| cache.clear(window, cx));
+        for uri in self.image_root.take_requested_resources() {
+            let resource = Resource::Uri(uri.into());
+            if let Some(Ok(image)) = window.get_asset::<ImgResourceLoader>(&resource, cx) {
+                cx.drop_image(image, Some(window));
+            }
+            cx.remove_asset::<ImgResourceLoader>(&resource);
+        }
     }
 
     /// The only entry point for actions that can replace the current document.
@@ -557,6 +568,7 @@ impl NativeMarkdownApp {
                         }
                         match app.document.save_as(path.clone()) {
                             Ok(()) => {
+                                app.release_document_images(window, cx);
                                 app.last_path = Some(path);
                                 app.image_root
                                     .set_document_path(app.document.path.as_deref());
@@ -934,6 +946,12 @@ impl NativeMarkdownApp {
     }
 
     fn preview_panel(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let logical_width: f32 = window.viewport_size().width.into();
+        self.image_root.set_viewport_width(
+            (logical_width * window.scale_factor())
+                .ceil()
+                .clamp(1.0, u32::MAX as f32) as u32,
+        );
         div()
             .debug_selector(|| "preview-panel".into())
             .flex_1()

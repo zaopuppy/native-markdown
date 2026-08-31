@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use futures::FutureExt as _;
 use gpui::{
-    hash, App, AppContext, Asset, AssetLogger, Entity, ImageAssetLoader, ImageCache,
-    ImageCacheError, ImageCacheItem, RenderImage, Resource, Window,
+    hash, App, AppContext, Asset, AssetLogger, Entity, ImageCache, ImageCacheError, ImageCacheItem,
+    ImgResourceLoader, RenderImage, Resource, Window,
 };
 use image::{imageops::FilterType, Frame, ImageBuffer, Rgba};
 
@@ -112,7 +112,9 @@ impl Asset for SizedImageAssetLoader {
         source: Self::Source,
         cx: &mut App,
     ) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
-        let image = ImageAssetLoader::load(source.resource, cx);
+        // TextView's virtual list can request the same image through GPUI's global loader before
+        // the ancestor ImageCache is in scope. Share that task instead of decoding a second copy.
+        let (image, _) = cx.fetch_asset::<ImgResourceLoader>(&source.resource);
         async move {
             let image = image.await?;
             downsample_to_width(image, source.max_width)
