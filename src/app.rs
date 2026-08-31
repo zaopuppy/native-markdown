@@ -143,8 +143,8 @@ impl NativeMarkdownApp {
                     BenchmarkScenario::ZoomSplit => self.set_view_mode(ViewMode::Split, cx),
                     _ => self.set_view_mode(ViewMode::Preview, cx),
                 }
-                let phase = step % 40;
-                let tenths = if phase <= 20 { 5 + phase } else { 45 - phase };
+                let phase = step % 30;
+                let tenths = if phase <= 15 { 10 + phase } else { 40 - phase };
                 self.zoom = ZoomLevel::from_factor(tenths as f32 / 10.0);
                 self.apply_zoom(cx);
             }
