@@ -90,6 +90,25 @@ pub fn sections(markdown: &str, headings: &[Heading]) -> Vec<Section> {
     result
 }
 
+pub fn focus_range(
+    markdown: &str,
+    headings: &[Heading],
+    section_index: usize,
+) -> Option<Range<usize>> {
+    let section = sections(markdown, headings).get(section_index)?.clone();
+    let Some(heading_index) = section.heading_index else {
+        return Some(section.range);
+    };
+    let heading = headings.get(heading_index)?;
+    let end = headings
+        .iter()
+        .skip(heading_index + 1)
+        .find(|candidate| candidate.level <= heading.level)
+        .map_or(markdown.len(), |candidate| candidate.offset);
+
+    Some(heading.offset..end)
+}
+
 fn reading_text(markdown: &str) -> String {
     plain_text_with_mermaid(markdown, false)
 }
@@ -263,6 +282,53 @@ mod tests {
         let hits = search(source, "needle", &outline);
         assert_eq!(hits.len(), 2);
         assert_ne!(hits[0].section_index, hits[1].section_index);
+    }
+
+    #[test]
+    fn focus_range_includes_the_complete_heading_subtree() {
+        let source = "# Root\nroot\n## Child\nchild\n### Grandchild\ngrandchild\n## Peer\npeer\n# Next\nnext";
+        let outline = headings(source);
+
+        let root = focus_range(source, &outline, 0).unwrap();
+        assert_eq!(
+            &source[root],
+            "# Root\nroot\n## Child\nchild\n### Grandchild\ngrandchild\n## Peer\npeer\n"
+        );
+
+        let child = focus_range(source, &outline, 1).unwrap();
+        assert_eq!(
+            &source[child],
+            "## Child\nchild\n### Grandchild\ngrandchild\n"
+        );
+    }
+
+    #[test]
+    fn focus_range_handles_skipped_levels_and_the_last_heading() {
+        let source = "Intro\n\n## Parent\nparent\n#### Skipped\nchild\n##### Last\nlast";
+        let outline = headings(source);
+
+        let parent = focus_range(source, &outline, 1).unwrap();
+        assert_eq!(
+            &source[parent],
+            "## Parent\nparent\n#### Skipped\nchild\n##### Last\nlast"
+        );
+
+        let last = focus_range(source, &outline, 3).unwrap();
+        assert_eq!(&source[last], "##### Last\nlast");
+    }
+
+    #[test]
+    fn focus_range_preserves_flat_search_sections() {
+        let source = "Intro needle\n\n# Parent\n## Child\nneedle";
+        let outline = headings(source);
+        let hits = search(source, "needle", &outline);
+
+        assert_eq!(hits.len(), 2);
+        assert_ne!(hits[0].section_index, hits[1].section_index);
+        assert_eq!(
+            &source[focus_range(source, &outline, hits[0].section_index).unwrap()],
+            "Intro needle\n\n"
+        );
     }
 
     #[test]

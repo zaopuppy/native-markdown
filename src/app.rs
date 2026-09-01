@@ -1837,9 +1837,7 @@ impl NativeMarkdownApp {
 
     fn preview_source(&self) -> (SharedString, usize) {
         let Some(range) = self.focused_section.and_then(|section_index| {
-            markdown::sections(&self.document.content, &self.outline)
-                .get(section_index)
-                .map(|section| section.range.clone())
+            markdown::focus_range(&self.document.content, &self.outline, section_index)
         }) else {
             return (self.preview_markdown.clone(), 0);
         };
@@ -2487,6 +2485,33 @@ mod tests {
             assert_eq!(
                 app.responsive_panel_visibility(700.0),
                 (false, false, false, false)
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn focused_section_preview_includes_descendant_sections(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("focused-subtree.md");
+        std::fs::write(
+            &path,
+            "# Parent\nparent\n## Child\nchild\n### Grandchild\ngrandchild\n# Next\nnext",
+        )
+        .unwrap();
+        let image_root = DocumentImageRoot::default();
+        let (app, cx) = cx.add_window_view(|window, cx| {
+            let mut app = NativeMarkdownApp::new(Some(path), image_root, window, cx);
+            app.focused_section = Some(0);
+            app
+        });
+
+        app.read_with(cx, |app, _| {
+            let (source, offset) = app.preview_source();
+            assert_eq!(offset, 0);
+            assert_eq!(
+                source.to_string(),
+                "# Parent\nparent\n## Child\nchild\n### Grandchild\ngrandchild\n"
             );
         });
     }
