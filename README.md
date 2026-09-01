@@ -70,6 +70,7 @@ Use `-Scenario zoom -Steps 5 -StepMs 300` for the minimal staged-zoom probe. The
 ## Tech Stack
 
 - **GPUI**: GPU-accelerated native window and rendering runtime
+- **GPUI Component fork**: Two pinned generic `TextView` seams; see [fork maintenance](docs/gpui-component-fork.md)
 - **GPUI Component `TextView`**: Virtualized Markdown, simple HTML, and image rendering
 - **pulldown-cmark**: Outline, search, and reading metadata analysis
 - **rfd**: Native file dialogs
