@@ -2,9 +2,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    actions, div, image_cache, prelude::*, px, rgb, App, AppContext, Context, Entity,
-    ExternalPaths, ImgResourceLoader, IntoElement, KeyBinding, PromptButton, PromptLevel, Render,
-    Resource, ScrollWheelEvent, SharedString, Subscription, Window,
+    actions, div, image_cache, img, prelude::*, px, relative, rgb, AnyElement, App, AppContext,
+    Context, Entity, ExternalPaths, ImgResourceLoader, IntoElement, KeyBinding, ObjectFit,
+    PromptButton, PromptLevel, Render, Resource, ScrollWheelEvent, SharedString, Subscription,
+    WeakEntity, Window,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputEvent, InputState, Position};
@@ -18,7 +19,7 @@ use crate::document::Document;
 use crate::image_cache::{BudgetImageCache, WARNING_THRESHOLD_BYTES};
 use crate::image_loader::DocumentImageRoot;
 use crate::markdown::{self, Heading, SearchHit};
-use crate::mermaid::{self, MermaidManager, OPEN_TIMEOUT};
+use crate::mermaid::{self, MermaidManager, MermaidPreview, MermaidPreviewStatus, OPEN_TIMEOUT};
 use crate::zoom::ZoomLevel;
 
 const APP_CONTEXT: &str = "NativeMarkdown";
@@ -112,6 +113,7 @@ pub struct NativeMarkdownApp {
     view_mode: ViewMode,
     outline_open: bool,
     search_open: bool,
+    preview_markdown: SharedString,
     focused_section: Option<usize>,
     selected_heading: Option<usize>,
     outline_mode: OutlineMode,
@@ -271,6 +273,7 @@ impl NativeMarkdownApp {
         let word_count = markdown::word_count(&document.content);
         let reading_minutes = markdown::reading_minutes(word_count);
         let last_path = document.path.clone().or(initial_path);
+        let preview_markdown = SharedString::from(document.content.clone());
 
         let mut app = Self {
             document,
@@ -285,6 +288,7 @@ impl NativeMarkdownApp {
             view_mode: ViewMode::Preview,
             outline_open: false,
             search_open: false,
+            preview_markdown,
             focused_section: None,
             selected_heading: None,
             outline_mode: OutlineMode::Focus,
@@ -314,6 +318,7 @@ impl NativeMarkdownApp {
     }
 
     fn refresh_analysis(&mut self) {
+        self.preview_markdown = SharedString::from(self.document.content.clone());
         self.outline = markdown::headings(&self.document.content);
         self.word_count = markdown::word_count(&self.document.content);
         self.reading_minutes = markdown::reading_minutes(self.word_count);
@@ -1091,23 +1096,19 @@ impl NativeMarkdownApp {
         panel
     }
 
-    fn preview_source(&self, viewport_width: u32) -> SharedString {
-        let range = self
-            .focused_section
-            .and_then(|section_index| {
-                markdown::sections(&self.document.content, &self.outline)
-                    .get(section_index)
-                    .map(|section| section.range.clone())
-            })
-            .unwrap_or(0..self.document.content.len());
-        self.mermaid
-            .transform_range(
-                &self.document.content,
-                range,
-                viewport_width,
-                self.zoom.percent(),
-            )
-            .into()
+    fn preview_source(&self) -> (SharedString, usize) {
+        let Some(range) = self.focused_section.and_then(|section_index| {
+            markdown::sections(&self.document.content, &self.outline)
+                .get(section_index)
+                .map(|section| section.range.clone())
+        }) else {
+            return (self.preview_markdown.clone(), 0);
+        };
+        let source_offset = range.start;
+        (
+            SharedString::from(self.document.content[range].to_owned()),
+            source_offset,
+        )
     }
 
     fn preview_panel(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1122,34 +1123,34 @@ impl NativeMarkdownApp {
             .clamp(1.0, 1_280.0) as u32;
         self.image_root.set_viewport_width(viewport_width);
         let app = cx.entity().downgrade();
-        let mut preview = TextView::markdown(
-            "native-markdown-preview",
-            self.preview_source(viewport_width),
-            window,
-            cx,
-        )
-        .selectable(true)
-        .scrollable(true);
+        let (preview_source, preview_source_offset) = self.preview_source();
+        let mut preview = TextView::markdown("native-markdown-preview", preview_source, window, cx)
+            .selectable(true)
+            .scrollable(true);
         if self.outline_mode == OutlineMode::Jump {
             if let Some(heading_index) = self.selected_heading {
                 preview = preview.scroll_to_heading_once(heading_index, self.outline_jump_request);
             }
         }
-        let preview = preview.code_block_actions(move |code_block, _, _| {
-            let Some(index) =
-                mermaid::action_block_index(code_block.lang().as_deref().map(|value| &**value))
-            else {
-                return div().into_any_element();
-            };
-            let app = app.clone();
-            Button::new(("mermaid-view-source", index))
-                .label("View source")
-                .small()
-                .on_click(move |_, window, cx| {
-                    app.update(cx, |app, cx| app.show_mermaid_source(index, window, cx))
-                        .ok();
-                })
-                .into_any_element()
+        let preview = preview.code_block_renderer(move |code_block, _, cx| {
+            if !code_block
+                .lang()
+                .as_deref()
+                .is_some_and(|language| language.trim().eq_ignore_ascii_case("mermaid"))
+            {
+                return None;
+            }
+            let source_range = code_block.source_range()?;
+            let source_range = source_range.start + preview_source_offset
+                ..source_range.end + preview_source_offset;
+            let entity = app.upgrade()?;
+            let app_state = entity.read(cx);
+            let preview = app_state.mermaid.preview_for_block(
+                source_range,
+                viewport_width,
+                app_state.zoom.percent(),
+            )?;
+            Some(mermaid_preview_element(preview, app.clone()))
         });
 
         div()
@@ -1399,6 +1400,66 @@ impl Render for NativeMarkdownApp {
     }
 }
 
+fn mermaid_preview_element(
+    preview: MermaidPreview,
+    app: WeakEntity<NativeMarkdownApp>,
+) -> AnyElement {
+    let (image_uri, message, is_error) = match preview.status {
+        MermaidPreviewStatus::Ready { image_uri } => (Some(image_uri), None, false),
+        MermaidPreviewStatus::Loading { image_uri, message } => (image_uri, Some(message), false),
+        MermaidPreviewStatus::Error { image_uri, message } => (image_uri, Some(message), true),
+    };
+    let mut element = div().v_flex().w_full().gap_2();
+    if let Some(image_uri) = image_uri {
+        element = element.child(
+            img(SharedString::from(image_uri))
+                .object_fit(ObjectFit::Contain)
+                .max_w(relative(1.0)),
+        );
+    }
+    if let Some(message) = message {
+        let index = preview.index;
+        let source_app = app.clone();
+        element = element.child(
+            div()
+                .debug_selector(|| "mermaid-preview-message".into())
+                .v_flex()
+                .w_full()
+                .gap_2()
+                .p_3()
+                .rounded_md()
+                .bg(if is_error {
+                    rgb(0xf7e5df)
+                } else {
+                    rgb(0xeee9df)
+                })
+                .text_color(if is_error {
+                    rgb(0x9b392a)
+                } else {
+                    rgb(0x665b4d)
+                })
+                .child(div().whitespace_normal().child(message))
+                .child(
+                    Button::new(("mermaid-view-source", index))
+                        .label("View source")
+                        .small()
+                        .on_click(move |_, window, cx| {
+                            source_app
+                                .update(cx, |app, cx| app.show_mermaid_source(index, window, cx))
+                                .ok();
+                        }),
+                ),
+        );
+    }
+    if preview.experimental {
+        element = element.child(div().text_sm().text_color(rgb(0x70685b)).child(format!(
+            "Experimental Mermaid {} rendering",
+            preview.diagram_label
+        )));
+    }
+    element.into_any_element()
+}
+
 fn byte_offset_position(source: &str, offset: usize) -> Position {
     let offset = offset.min(source.len());
     let before = &source[..offset];
@@ -1499,6 +1560,31 @@ mod tests {
             preview.size.height,
             workspace.size.height
         );
+    }
+
+    #[gpui::test]
+    fn focused_section_renders_mermaid_without_rewriting_markdown(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("focused-mermaid.md");
+        std::fs::write(
+            &path,
+            "# First\n\nText.\n\n# Diagram\n\n```mermaid\nflowchart LR\nA-->B\n```\n",
+        )
+        .unwrap();
+        let image_root = DocumentImageRoot::default();
+        let (app, cx) = cx.add_window_view(|window, cx| {
+            let mut app = NativeMarkdownApp::new(Some(path), image_root, window, cx);
+            app.focused_section = Some(1);
+            app
+        });
+
+        app.update(cx, |_, cx| cx.notify());
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        assert!(cx.debug_bounds("mermaid-preview-message").is_some());
     }
 
     #[test]

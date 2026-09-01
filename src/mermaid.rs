@@ -28,7 +28,6 @@ const WORKER_ARG: &str = "--native-markdown-mermaid-worker";
 const SELF_TEST_ARG: &str = "--native-markdown-mermaid-self-test";
 const MAX_ERROR_BYTES: usize = 16 * 1024;
 const RENDERER_CACHE_VERSION: &str = "merman-0.7.0/native-markdown-theme-v1";
-const ACTION_LANGUAGE_PREFIX: &str = "native-mermaid-action-";
 static WORKER_PID: AtomicU64 = AtomicU64::new(0);
 
 pub fn worker_pid() -> Option<u32> {
@@ -68,6 +67,29 @@ enum RenderStatus {
         message: String,
         last_good: Option<String>,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MermaidPreviewStatus {
+    Ready {
+        image_uri: String,
+    },
+    Loading {
+        image_uri: Option<String>,
+        message: String,
+    },
+    Error {
+        image_uri: Option<String>,
+        message: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MermaidPreview {
+    pub index: usize,
+    pub diagram_label: String,
+    pub experimental: bool,
+    pub status: MermaidPreviewStatus,
 }
 
 #[derive(Clone, Debug)]
@@ -274,85 +296,51 @@ impl MermaidManager {
             .map(|state| state.block.body_range.clone())
     }
 
-    pub fn transform_range(
+    pub fn preview_for_block(
         &self,
-        source: &str,
-        range: Range<usize>,
+        source_range: Range<usize>,
         viewport_width: u32,
         zoom_percent: u32,
-    ) -> String {
-        let mut output = String::with_capacity(range.len());
-        let mut cursor = range.start;
-        for state in self.blocks.iter().filter(|state| {
-            state.block.whole_range.start >= range.start && state.block.whole_range.end <= range.end
-        }) {
-            output.push_str(&source[cursor..state.block.whole_range.start]);
-            output.push_str(&render_preview_block(state, viewport_width, zoom_percent));
-            cursor = state.block.whole_range.end;
-        }
-        output.push_str(&source[cursor..range.end]);
-        output
+    ) -> Option<MermaidPreview> {
+        let state = self
+            .blocks
+            .iter()
+            .find(|state| state.block.whole_range == source_range)?;
+        let image_uri = |asset_key: &str| {
+            format!(
+                "{URI_PREFIX}{asset_key}.png?w={}&z={}",
+                viewport_width.clamp(1, 1_280),
+                zoom_percent.clamp(50, 250),
+            )
+        };
+        let status = match &state.status {
+            RenderStatus::Ready { asset_key } => MermaidPreviewStatus::Ready {
+                image_uri: image_uri(asset_key),
+            },
+            RenderStatus::Loading { last_good } => MermaidPreviewStatus::Loading {
+                image_uri: last_good.as_deref().map(image_uri),
+                message: if last_good.is_some() {
+                    "Rendering updated Mermaid diagram…".to_owned()
+                } else {
+                    "Rendering Mermaid diagram…".to_owned()
+                },
+            },
+            RenderStatus::Error { message, last_good } => MermaidPreviewStatus::Error {
+                image_uri: last_good.as_deref().map(image_uri),
+                message: if last_good.is_some() {
+                    format!("Current Mermaid source has an error: {message}")
+                } else {
+                    format!("Mermaid rendering failed: {message}")
+                },
+            },
+        };
+        Some(MermaidPreview {
+            index: state.block.index,
+            diagram_label: state.block.diagram_label.clone(),
+            experimental: state.block.support == SupportLevel::Experimental,
+            status,
+        })
     }
-}
-
-fn render_preview_block(state: &BlockState, viewport_width: u32, zoom_percent: u32) -> String {
-    let image = |asset_key: &str| {
-        format!(
-            "![Mermaid {} diagram]({URI_PREFIX}{asset_key}.png?w={}&z={})",
-            state.block.diagram_label,
-            viewport_width.clamp(1, 1_280),
-            zoom_percent.clamp(50, 250),
-        )
-    };
-    let action_block = |message: &str| {
-        format!(
-            "```{ACTION_LANGUAGE_PREFIX}{}\n{}\n```",
-            state.block.index,
-            clean_error(message)
-        )
-    };
-    let experimental = if state.block.support == SupportLevel::Experimental {
-        format!(
-            "\n\n*Experimental Mermaid {} rendering*",
-            state.block.diagram_label
-        )
-    } else {
-        String::new()
-    };
-
-    match &state.status {
-        RenderStatus::Ready { asset_key } => format!("{}{}\n", image(asset_key), experimental),
-        RenderStatus::Loading { last_good } => match last_good {
-            Some(asset_key) => format!(
-                "{}\n\n{}{}\n",
-                image(asset_key),
-                action_block("Rendering updated Mermaid diagram…"),
-                experimental
-            ),
-            None => format!(
-                "{}{}\n",
-                action_block("Rendering Mermaid diagram…"),
-                experimental
-            ),
-        },
-        RenderStatus::Error { message, last_good } => match last_good {
-            Some(asset_key) => format!(
-                "{}\n\n{}{}\n",
-                image(asset_key),
-                action_block(&format!("Current Mermaid source has an error: {message}")),
-                experimental
-            ),
-            None => format!(
-                "{}{}\n",
-                action_block(&format!("Mermaid rendering failed: {message}")),
-                experimental
-            ),
-        },
-    }
-}
-
-pub fn action_block_index(language: Option<&str>) -> Option<usize> {
-    language?.strip_prefix(ACTION_LANGUAGE_PREFIX)?.parse().ok()
 }
 
 pub fn discover_blocks(markdown_source: &str) -> Vec<MermaidBlock> {
@@ -1100,16 +1088,23 @@ mod tests {
     }
 
     #[test]
-    fn preview_transform_preserves_everything_outside_the_fence() {
+    fn preview_lookup_uses_the_original_fence_range() {
         let source = "# Title\n\n```mermaid\nflowchart LR\nA-->B\n```\n\nTail\n";
         let mut manager = MermaidManager::new();
         let jobs = manager.refresh(source, EDIT_TIMEOUT);
         assert_eq!(jobs.len(), 1);
-        let transformed = manager.transform_range(source, 0..source.len(), 900, 100);
-        assert!(transformed.starts_with("# Title\n\n"));
-        assert!(transformed.ends_with("\n\nTail\n"));
-        assert!(transformed.contains("Rendering Mermaid diagram"));
-        assert!(!transformed.contains("flowchart LR"));
+        let range = discover_blocks(source)[0].whole_range.clone();
+        let preview = manager.preview_for_block(range.clone(), 900, 100).unwrap();
+        assert!(matches!(
+            preview.status,
+            MermaidPreviewStatus::Loading {
+                image_uri: None,
+                ref message,
+            } if message == "Rendering Mermaid diagram…"
+        ));
+        assert!(manager
+            .preview_for_block(range.start + 1..range.end, 900, 100)
+            .is_none());
     }
 
     #[test]
@@ -1195,9 +1190,16 @@ mod tests {
             .is_some());
 
         let second_job = manager.refresh(second, EDIT_TIMEOUT).remove(0);
-        let transformed = manager.transform_range(second, 0..second.len(), 900, 100);
-        assert!(transformed.contains(&first_job.source_key));
-        assert!(transformed.contains("Rendering updated Mermaid diagram"));
+        let range = discover_blocks(second)[0].whole_range.clone();
+        let preview = manager.preview_for_block(range, 900, 100).unwrap();
+        assert!(matches!(
+            preview.status,
+            MermaidPreviewStatus::Loading {
+                image_uri: Some(ref uri),
+                ref message,
+            } if uri.contains(&first_job.source_key)
+                && message == "Rendering updated Mermaid diagram…"
+        ));
         assert!(manager
             .apply_result(
                 &first_job.source_key,
