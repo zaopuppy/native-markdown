@@ -8,7 +8,8 @@ A quiet, reader-first Markdown desktop app built with Rust and GPUI Component. D
 - **Preview and source modes**: Switch between preview, split, and source-only layouts
 - **Native Markdown rendering**: Headings, tables, task lists, strikethrough, links, local images, highlighted code blocks, and simple inline HTML
 - **Offline Mermaid diagrams**: Fenced `mermaid` blocks render through an isolated native worker, with no browser, WebView, Node, or network service
-- **Document outline**: Collapsible heading navigation for long documents
+- **Folder tree**: Lazy, read-only Markdown browsing rooted at the document folder, with parent and folder-root navigation
+- **Document outline**: Collapsible heading navigation in a resizable right sidebar
 - **Find**: Search rendered text and jump between matching sections
 - **Safe file lifecycle**: Atomic saves, Save As, dirty-state warnings, visible errors, and background recovery
 - **Desktop integration**: Native dialogs, drag-and-drop, and command-line paths
@@ -29,6 +30,8 @@ A quiet, reader-first Markdown desktop app built with Rust and GPUI Component. D
 | Zoom in / out / reset | `Ctrl++` / `Ctrl+-` / `Ctrl+0` |
 
 Use `Ctrl+mouse-wheel` for smooth zooming. Set `NATIVE_MARKDOWN_REMOTE_IMAGES=1` before launch only when a document is allowed to load remote images.
+
+When the file tree is focused, use `Up` / `Down` to move, `Left` / `Right` to collapse or expand folders, and `Enter` to open a Markdown file.
 
 ## Mermaid compatibility
 

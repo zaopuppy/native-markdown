@@ -3,28 +3,55 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     actions, div, image_cache, img, prelude::*, px, relative, rgb, AnyElement, App, AppContext,
-    Context, Entity, ExternalPaths, ImgResourceLoader, IntoElement, KeyBinding, ObjectFit,
-    PromptButton, PromptLevel, Render, Resource, ScrollWheelEvent, SharedString, Subscription,
-    WeakEntity, Window,
+    Context, Entity, ExternalPaths, FocusHandle, ImgResourceLoader, IntoElement, KeyBinding,
+    ObjectFit, PromptButton, PromptLevel, Render, Resource, ScrollWheelEvent, SharedString,
+    Subscription, WeakEntity, Window,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputEvent, InputState, Position};
+use gpui_component::menu::ContextMenuExt as _;
+use gpui_component::resizable::{h_resizable, resizable_panel, ResizableState};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::text::TextView;
-use gpui_component::{Selectable as _, Sizable as _, StyledExt as _, Theme};
+use gpui_component::tooltip::Tooltip;
+use gpui_component::{Disableable as _, Selectable as _, Sizable as _, StyledExt as _, Theme};
 use rfd::AsyncFileDialog;
 
 use crate::benchmark::BenchmarkScenario;
 use crate::document::Document;
+use crate::file_tree::{self, EntryKind, FileTree, VisibleRow};
 use crate::image_cache::{BudgetImageCache, WARNING_THRESHOLD_BYTES};
 use crate::image_loader::DocumentImageRoot;
+use crate::layout_settings::LayoutSettings;
 use crate::markdown::{self, Heading, SearchHit};
 use crate::mermaid::{self, MermaidManager, MermaidPreview, MermaidPreviewStatus, OPEN_TIMEOUT};
 use crate::zoom::ZoomLevel;
 
 const APP_CONTEXT: &str = "NativeMarkdown";
+const FILE_TREE_CONTEXT: &str = "NativeMarkdownFileTree";
 const BASE_FONT_SIZE: f32 = 16.0;
 const BASE_MONO_FONT_SIZE: f32 = 13.0;
+const FILE_TREE_HIDE_BELOW: f32 = 760.0;
+const OUTLINE_HIDE_BELOW: f32 = 1000.0;
+
+fn state_button(button: Button, selected: bool) -> Button {
+    button
+        .selected(selected)
+        .border_1()
+        .when(selected, |button| {
+            button
+                .bg(rgb(0x81531d))
+                .border_color(rgb(0x5f3a10))
+                .text_color(rgb(0xfffbf3))
+                .shadow_sm()
+        })
+        .when(!selected, |button| {
+            button
+                .bg(rgb(0xf6f1e7))
+                .border_color(rgb(0xbbaa8e))
+                .text_color(rgb(0x4f473d))
+        })
+}
 
 actions!(
     native_markdown,
@@ -41,6 +68,13 @@ actions!(
         ZoomIn,
         ZoomOut,
         ResetZoom,
+        FileTreeUp,
+        FileTreeDown,
+        FileTreeLeft,
+        FileTreeRight,
+        FileTreeOpen,
+        OpenTreeContext,
+        SetTreeRootContext,
     ]
 );
 
@@ -59,6 +93,11 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-=", ZoomIn, Some(APP_CONTEXT)),
         KeyBinding::new("ctrl--", ZoomOut, Some(APP_CONTEXT)),
         KeyBinding::new("ctrl-0", ResetZoom, Some(APP_CONTEXT)),
+        KeyBinding::new("up", FileTreeUp, Some(FILE_TREE_CONTEXT)),
+        KeyBinding::new("down", FileTreeDown, Some(FILE_TREE_CONTEXT)),
+        KeyBinding::new("left", FileTreeLeft, Some(FILE_TREE_CONTEXT)),
+        KeyBinding::new("right", FileTreeRight, Some(FILE_TREE_CONTEXT)),
+        KeyBinding::new("enter", FileTreeOpen, Some(FILE_TREE_CONTEXT)),
     ]);
 }
 
@@ -96,6 +135,7 @@ enum DocumentAction {
     New,
     OpenDialog,
     OpenPath(PathBuf),
+    OpenTreePath(PathBuf),
     Recover,
     CloseWindow,
 }
@@ -111,7 +151,16 @@ pub struct NativeMarkdownApp {
     search_query: String,
     active_hit: usize,
     view_mode: ViewMode,
+    file_tree: FileTree,
+    file_tree_focus: FocusHandle,
+    tree_context_path: Option<PathBuf>,
+    file_tree_open: bool,
     outline_open: bool,
+    file_tree_width: f32,
+    outline_width: f32,
+    file_tree_narrow_reveal: bool,
+    outline_narrow_reveal: bool,
+    workspace_resizable: Entity<ResizableState>,
     search_open: bool,
     preview_markdown: SharedString,
     focused_section: Option<usize>,
@@ -224,6 +273,17 @@ impl NativeMarkdownApp {
                 .placeholder("Find in document")
                 .clean_on_escape()
         });
+        let file_tree_focus = cx.focus_handle().tab_stop(true);
+        #[cfg(not(test))]
+        let layout = LayoutSettings::load();
+        #[cfg(test)]
+        let layout = LayoutSettings::default();
+        let tree_root = document
+            .path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf);
+        let workspace_resizable = cx.new(|_| ResizableState::default());
         let image_cache = BudgetImageCache::new(cx);
         let subscriptions = vec![
             cx.subscribe_in(
@@ -252,6 +312,11 @@ impl NativeMarkdownApp {
                     }
                 },
             ),
+            cx.observe_window_activation(window, |this: &mut Self, window, cx| {
+                if window.is_window_active() {
+                    this.refresh_file_tree(window, cx);
+                }
+            }),
         ];
 
         cx.spawn(async move |this, cx| loop {
@@ -286,7 +351,16 @@ impl NativeMarkdownApp {
             search_query: String::new(),
             active_hit: 0,
             view_mode: ViewMode::Preview,
-            outline_open: false,
+            file_tree: FileTree::new(tree_root),
+            file_tree_focus,
+            tree_context_path: None,
+            file_tree_open: layout.file_tree_open,
+            outline_open: layout.outline_open,
+            file_tree_width: layout.file_tree_width,
+            outline_width: layout.outline_width,
+            file_tree_narrow_reveal: false,
+            outline_narrow_reveal: false,
+            workspace_resizable,
             search_open: false,
             preview_markdown,
             focused_section: None,
@@ -303,6 +377,9 @@ impl NativeMarkdownApp {
             mermaid: MermaidManager::new(),
             _subscriptions: subscriptions,
         };
+        if let Some(root) = app.file_tree.root().map(Path::to_path_buf) {
+            app.load_tree_directory(root, window, cx);
+        }
         app.refresh_mermaid(OPEN_TIMEOUT, window, cx);
         app
     }
@@ -329,6 +406,202 @@ impl NativeMarkdownApp {
         self.selected_heading = self
             .selected_heading
             .filter(|heading| *heading < self.outline.len());
+    }
+
+    fn persist_layout(&self) {
+        let settings = LayoutSettings {
+            file_tree_open: self.file_tree_open,
+            outline_open: self.outline_open,
+            file_tree_width: self.file_tree_width,
+            outline_width: self.outline_width,
+        };
+        let _ = settings.save();
+    }
+
+    fn set_file_tree_root(
+        &mut self,
+        root: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.file_tree.set_root(root);
+        if let Some(root) = self.file_tree.root().map(Path::to_path_buf) {
+            self.load_tree_directory(root, window, cx);
+        }
+        cx.notify();
+    }
+
+    fn reset_tree_to_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let root = self
+            .document
+            .path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf);
+        self.set_file_tree_root(root, window, cx);
+    }
+
+    fn tree_up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let parent = self
+            .file_tree
+            .root()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf);
+        if let Some(parent) = parent {
+            self.set_file_tree_root(Some(parent), window, cx);
+        }
+    }
+
+    fn choose_tree_root(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.dialog_in_flight {
+            return;
+        }
+        let mut dialog = AsyncFileDialog::new();
+        if let Some(root) = self.file_tree.root() {
+            dialog = dialog.set_directory(root);
+        }
+        self.dialog_in_flight = true;
+        let selection = dialog.pick_folder();
+        let app = cx.entity().downgrade();
+        window
+            .spawn(cx, async move |cx| {
+                let path = selection.await.map(|folder| folder.path().to_path_buf());
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        app.dialog_in_flight = false;
+                        if let Some(path) = path {
+                            app.set_file_tree_root(Some(path), window, cx);
+                        } else {
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                })
+                .ok();
+            })
+            .detach();
+    }
+
+    fn refresh_file_tree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = self.file_tree.refresh_paths();
+        for path in paths {
+            self.load_tree_directory(path, window, cx);
+        }
+    }
+
+    fn load_tree_directory(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let request = self.file_tree.begin_load(&path);
+        let show_hidden = self.file_tree.show_hidden();
+        let scan_path = path.clone();
+        let scan = smol::unblock(move || file_tree::scan_directory(&scan_path, show_hidden));
+        let app = cx.entity().downgrade();
+        window
+            .spawn(cx, async move |cx| {
+                let result = scan.await;
+                cx.update(|_, cx| {
+                    app.update(cx, |app, cx| {
+                        if app.file_tree.finish_load(&path, request, result) {
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                })
+                .ok();
+            })
+            .detach();
+    }
+
+    fn toggle_tree_directory(
+        &mut self,
+        path: PathBuf,
+        traversable: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.file_tree.set_selected(Some(path.clone()));
+        if !traversable {
+            self.set_notice("Linked directories are not expanded", true);
+            cx.notify();
+            return;
+        }
+        if let Some(path) = self.file_tree.toggle_directory(&path) {
+            self.load_tree_directory(path, window, cx);
+        } else {
+            cx.notify();
+        }
+    }
+
+    fn move_tree_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let paths = self.file_tree.selectable_paths();
+        if paths.is_empty() {
+            return;
+        }
+        let current = self
+            .file_tree
+            .selected()
+            .and_then(|selected| paths.iter().position(|path| path == selected));
+        let next = match (current, delta.is_negative()) {
+            (Some(index), true) => index.saturating_sub(delta.unsigned_abs()),
+            (Some(index), false) => (index + delta as usize).min(paths.len() - 1),
+            (None, true) => paths.len() - 1,
+            (None, false) => 0,
+        };
+        self.file_tree.set_selected(Some(paths[next].clone()));
+        cx.notify();
+    }
+
+    fn open_selected_tree_entry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(selected) = self.file_tree.selected().map(Path::to_path_buf) else {
+            return;
+        };
+        let row =
+            self.file_tree.visible_rows().into_iter().find(
+                |row| matches!(row, VisibleRow::Entry { entry, .. } if entry.path == selected),
+            );
+        match row {
+            Some(VisibleRow::Entry {
+                entry:
+                    file_tree::TreeEntry {
+                        kind: EntryKind::Markdown,
+                        ..
+                    },
+                ..
+            }) => self.request_document_action(DocumentAction::OpenTreePath(selected), window, cx),
+            Some(VisibleRow::Entry {
+                entry:
+                    file_tree::TreeEntry {
+                        kind: EntryKind::Directory { traversable },
+                        ..
+                    },
+                ..
+            }) => self.toggle_tree_directory(selected, traversable, window, cx),
+            _ => {}
+        }
+    }
+
+    fn tree_selection_left(&mut self, cx: &mut Context<Self>) {
+        if self.file_tree.collapse_selected() {
+            cx.notify();
+            return;
+        }
+        let parent = self
+            .file_tree
+            .selected()
+            .and_then(Path::parent)
+            .filter(|parent| Some(*parent) != self.file_tree.root())
+            .map(Path::to_path_buf);
+        if let Some(parent) = parent {
+            self.file_tree.set_selected(Some(parent));
+            cx.notify();
+        }
+    }
+
+    fn tree_selection_right(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(path) = self.file_tree.expand_selected() {
+            self.load_tree_directory(path, window, cx);
+        } else {
+            cx.notify();
+        }
     }
 
     fn refresh_mermaid(&mut self, timeout: Duration, window: &mut Window, cx: &mut Context<Self>) {
@@ -434,7 +707,6 @@ impl NativeMarkdownApp {
         self.focused_section = None;
         self.selected_heading = None;
         self.search_open = false;
-        self.outline_open = false;
         self.view_mode = ViewMode::Preview;
         self.editor.update(cx, |editor, cx| {
             editor.set_value(self.document.content.clone(), window, cx)
@@ -480,6 +752,13 @@ impl NativeMarkdownApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if matches!(
+            &action,
+            DocumentAction::OpenTreePath(path)
+                if self.document.path.as_deref() == Some(path.as_path())
+        ) {
+            return;
+        }
         if self.dialog_in_flight {
             return;
         }
@@ -530,11 +809,13 @@ impl NativeMarkdownApp {
             DocumentAction::New => {
                 Document::clear_recovery();
                 self.replace_document(Document::new_document(), window, cx);
+                self.set_file_tree_root(None, window, cx);
                 self.view_mode = ViewMode::Split;
                 self.set_notice("New document", false);
             }
             DocumentAction::OpenDialog => self.open_dialog(window, cx),
             DocumentAction::OpenPath(path) => self.open_path(path, window, cx),
+            DocumentAction::OpenTreePath(path) => self.open_tree_path(path, window, cx),
             DocumentAction::Recover => self.recover(window, cx),
             DocumentAction::CloseWindow => {
                 Document::clear_recovery();
@@ -578,6 +859,23 @@ impl NativeMarkdownApp {
             Ok(document) => {
                 Document::clear_recovery();
                 self.replace_document(document, window, cx);
+                self.reset_tree_to_document(window, cx);
+                self.set_notice("Document opened", false);
+            }
+            Err(error) => self.set_notice(format!("Could not open document: {error}"), true),
+        }
+    }
+
+    fn open_tree_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if self.document.path.as_deref() == Some(path.as_path()) {
+            return;
+        }
+        let view_mode = self.view_mode;
+        match Document::open(path) {
+            Ok(document) => {
+                Document::clear_recovery();
+                self.replace_document(document, window, cx);
+                self.view_mode = view_mode;
                 self.set_notice("Document opened", false);
             }
             Err(error) => self.set_notice(format!("Could not open document: {error}"), true),
@@ -588,6 +886,7 @@ impl NativeMarkdownApp {
         match Document::recover() {
             Ok(document) => {
                 self.replace_document(document, window, cx);
+                self.set_file_tree_root(None, window, cx);
                 self.view_mode = ViewMode::Split;
                 self.recovery_available = false;
                 self.set_notice("Recovered unsaved draft", false);
@@ -674,6 +973,15 @@ impl NativeMarkdownApp {
                                 app.last_path = Some(path);
                                 app.image_root
                                     .set_document_path(app.document.path.as_deref());
+                                let should_reset_tree = app.file_tree.root().is_none_or(|root| {
+                                    app.document
+                                        .path
+                                        .as_deref()
+                                        .is_none_or(|document| !document.starts_with(root))
+                                });
+                                if should_reset_tree {
+                                    app.reset_tree_to_document(window, cx);
+                                }
                                 app.set_notice("Saved", false);
                                 if let Some(action) = continuation {
                                     app.perform_document_action(action, window, cx);
@@ -829,8 +1137,59 @@ impl NativeMarkdownApp {
         self.set_view_mode(mode, cx);
     }
 
-    fn toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn responsive_panel_visibility(&self, width: f32) -> (bool, bool, bool, bool) {
+        let regular_tree = self.file_tree_open && width >= FILE_TREE_HIDE_BELOW;
+        let regular_outline = self.outline_open && width >= OUTLINE_HIDE_BELOW;
+        let overlay_tree =
+            self.file_tree_open && width < FILE_TREE_HIDE_BELOW && self.file_tree_narrow_reveal;
+        let overlay_outline =
+            self.outline_open && width < OUTLINE_HIDE_BELOW && self.outline_narrow_reveal;
+        (regular_tree, regular_outline, overlay_tree, overlay_outline)
+    }
+
+    fn toggle_file_tree(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let width: f32 = window.viewport_size().width.into();
+        if width < FILE_TREE_HIDE_BELOW {
+            if self.file_tree_open {
+                self.file_tree_narrow_reveal = !self.file_tree_narrow_reveal;
+            } else {
+                self.file_tree_open = true;
+                self.file_tree_narrow_reveal = true;
+                self.persist_layout();
+            }
+        } else {
+            self.file_tree_open = !self.file_tree_open;
+            self.file_tree_narrow_reveal = false;
+            self.persist_layout();
+        }
+        cx.notify();
+    }
+
+    fn toggle_outline(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let width: f32 = window.viewport_size().width.into();
+        if width < OUTLINE_HIDE_BELOW {
+            if self.outline_open {
+                self.outline_narrow_reveal = !self.outline_narrow_reveal;
+            } else {
+                self.outline_open = true;
+                self.outline_narrow_reveal = true;
+                self.persist_layout();
+            }
+        } else {
+            self.outline_open = !self.outline_open;
+            self.outline_narrow_reveal = false;
+            self.persist_layout();
+        }
+        cx.notify();
+    }
+
+    fn toolbar(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dirty = if self.document.is_dirty() { " •" } else { "" };
+        let width: f32 = window.viewport_size().width.into();
+        let (regular_tree, regular_outline, overlay_tree, overlay_outline) =
+            self.responsive_panel_visibility(width);
+        let tree_visible = regular_tree || overlay_tree;
+        let outline_visible = regular_outline || overlay_outline;
         div()
             .h_flex()
             .h(px(72.0))
@@ -883,42 +1242,40 @@ impl NativeMarkdownApp {
             )
             .child(div().w(px(1.0)).h(px(24.0)).mx_2().bg(rgb(0xd3c8b5)))
             .child(
-                Button::new("preview-mode")
-                    .label("Preview")
-                    .small()
-                    .selected(self.view_mode == ViewMode::Preview)
-                    .on_click(
-                        cx.listener(|this, _, _, cx| this.set_view_mode(ViewMode::Preview, cx)),
-                    ),
+                state_button(
+                    Button::new("preview-mode").label("Preview").small(),
+                    self.view_mode == ViewMode::Preview,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.set_view_mode(ViewMode::Preview, cx))),
             )
             .child(
-                Button::new("split-mode")
-                    .label("Split")
-                    .small()
-                    .selected(self.view_mode == ViewMode::Split)
-                    .on_click(
-                        cx.listener(|this, _, _, cx| this.set_view_mode(ViewMode::Split, cx)),
-                    ),
+                state_button(
+                    Button::new("split-mode").label("Split").small(),
+                    self.view_mode == ViewMode::Split,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.set_view_mode(ViewMode::Split, cx))),
             )
             .child(
-                Button::new("source-mode")
-                    .label("Source")
-                    .small()
-                    .selected(self.view_mode == ViewMode::Source)
-                    .on_click(
-                        cx.listener(|this, _, _, cx| this.set_view_mode(ViewMode::Source, cx)),
-                    ),
+                state_button(
+                    Button::new("source-mode").label("Source").small(),
+                    self.view_mode == ViewMode::Source,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.set_view_mode(ViewMode::Source, cx))),
             )
             .child(div().flex_1())
             .child(
-                Button::new("toggle-outline")
-                    .label("Outline")
-                    .small()
-                    .selected(self.outline_open)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.outline_open = !this.outline_open;
-                        cx.notify();
-                    })),
+                state_button(
+                    Button::new("toggle-file-tree").label("Files").small(),
+                    tree_visible,
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.toggle_file_tree(window, cx))),
+            )
+            .child(
+                state_button(
+                    Button::new("toggle-outline").label("Outline").small(),
+                    outline_visible,
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.toggle_outline(window, cx))),
             )
             .child(
                 Button::new("find-document")
@@ -1001,18 +1358,369 @@ impl NativeMarkdownApp {
             )
     }
 
+    fn file_tree_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        use std::hash::{Hash as _, Hasher as _};
+
+        let root = self.file_tree.root().map(Path::to_path_buf);
+        let root_title = root
+            .as_deref()
+            .and_then(Path::file_name)
+            .map(|name| name.to_string_lossy().into_owned())
+            .or_else(|| root.as_deref().map(|path| path.display().to_string()))
+            .unwrap_or_else(|| "No folder".to_owned());
+        let full_path = root
+            .as_deref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "Save or open a document to show its folder".to_owned());
+        let root_tooltip = full_path.clone();
+        let can_go_up = root.as_deref().and_then(Path::parent).is_some();
+        let has_document_path = self.document.path.is_some();
+        let active_not_shown = self.document.path.as_deref().is_some_and(|active| {
+            !file_tree::is_markdown_path(active)
+                || root.as_deref().is_none_or(|root| !active.starts_with(root))
+        });
+        let mut root_hasher = std::collections::hash_map::DefaultHasher::new();
+        root.hash(&mut root_hasher);
+        let root_id = root_hasher.finish();
+
+        let header = div()
+            .v_flex()
+            .flex_none()
+            .gap_2()
+            .p_3()
+            .border_b_1()
+            .border_color(rgb(0xd3c8b5))
+            .child(
+                div()
+                    .h_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id("file-tree-root-title")
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .font_semibold()
+                            .child(root_title)
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(root_tooltip.clone()).build(window, cx)
+                            }),
+                    )
+                    .child(
+                        Button::new("close-file-tree")
+                            .label("×")
+                            .small()
+                            .ghost()
+                            .tooltip("Close file tree")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.file_tree_open = false;
+                                this.file_tree_narrow_reveal = false;
+                                this.persist_layout();
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .h_flex()
+                    .gap_1()
+                    .child(
+                        Button::new("tree-up")
+                            .label("↑")
+                            .small()
+                            .ghost()
+                            .disabled(!can_go_up)
+                            .tooltip("Use the parent folder as root")
+                            .on_click(cx.listener(|this, _, window, cx| this.tree_up(window, cx))),
+                    )
+                    .child(
+                        Button::new("tree-document-root")
+                            .label("⌂")
+                            .small()
+                            .ghost()
+                            .disabled(!has_document_path)
+                            .tooltip("Use the current document folder as root")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.reset_tree_to_document(window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("tree-refresh")
+                            .label("↻")
+                            .small()
+                            .ghost()
+                            .disabled(root.is_none())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.refresh_file_tree(window, cx)
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .h_flex()
+                    .gap_1()
+                    .child(
+                        Button::new("tree-choose-root")
+                            .label("…")
+                            .small()
+                            .ghost()
+                            .tooltip("Choose a folder as root")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| {
+                                    this.choose_tree_root(window, cx)
+                                }),
+                            ),
+                    )
+                    .child(
+                        state_button(
+                            Button::new("tree-show-hidden").label("Hidden").small(),
+                            self.file_tree.show_hidden(),
+                        )
+                        .tooltip("Show hidden, system, and heavy folders")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            let show = !this.file_tree.show_hidden();
+                            let paths = this.file_tree.set_show_hidden(show);
+                            for path in paths {
+                                this.load_tree_directory(path, window, cx);
+                            }
+                            cx.notify();
+                        })),
+                    ),
+            )
+            .when(active_not_shown, |view| {
+                view.child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(0x96692b))
+                        .child("Current file is not shown in this tree"),
+                )
+            });
+
+        let mut body = div()
+            .id(("file-tree-scroll", root_id))
+            .v_flex()
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scrollbar()
+            .py_2();
+
+        if root.is_none() {
+            body = body.child(
+                div()
+                    .v_flex()
+                    .gap_2()
+                    .p_4()
+                    .text_sm()
+                    .text_color(rgb(0x70685b))
+                    .child("Save the document to show its folder.")
+                    .child(
+                        Button::new("tree-empty-save")
+                            .label("Save document")
+                            .small()
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.save_current(window, cx)),
+                            ),
+                    )
+                    .child(
+                        Button::new("tree-empty-open")
+                            .label("Open document")
+                            .small()
+                            .ghost()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.request_document_action(DocumentAction::OpenDialog, window, cx)
+                            })),
+                    ),
+            );
+        } else {
+            for (row_index, row) in self.file_tree.visible_rows().into_iter().enumerate() {
+                match row {
+                    VisibleRow::Entry {
+                        entry,
+                        depth,
+                        expanded,
+                    } => {
+                        let path = entry.path.clone();
+                        let is_active = self.document.path.as_deref() == Some(path.as_path());
+                        let is_cursor = self.file_tree.selected() == Some(path.as_path());
+                        let (prefix, is_directory, traversable) = match entry.kind {
+                            EntryKind::Directory { traversable } => (
+                                if !traversable {
+                                    "↗"
+                                } else if expanded {
+                                    "▾"
+                                } else {
+                                    "▸"
+                                },
+                                true,
+                                traversable,
+                            ),
+                            EntryKind::Markdown => ("◆", false, false),
+                        };
+                        let click_path = path.clone();
+                        let path_tooltip = path.display().to_string();
+                        let focus = self.file_tree_focus.clone();
+                        let row_element = div()
+                            .id(("file-tree-row", row_index))
+                            .h_flex()
+                            .h(px(30.0))
+                            .flex_none()
+                            .min_w_0()
+                            .pl(px(8.0 + depth as f32 * 16.0))
+                            .pr_2()
+                            .gap_2()
+                            .text_sm()
+                            .cursor_pointer()
+                            .when(is_active, |view| view.bg(rgb(0xd7c4a5)).font_semibold())
+                            .when(is_cursor && !is_active, |view| view.bg(rgb(0xe3d8c6)))
+                            .hover(|view| view.bg(rgb(0xe6dccb)))
+                            .child(
+                                div()
+                                    .w(px(14.0))
+                                    .flex_none()
+                                    .text_color(if is_directory {
+                                        rgb(0x96692b)
+                                    } else {
+                                        rgb(0x665b4d)
+                                    })
+                                    .child(prefix),
+                            )
+                            .child(div().min_w_0().truncate().child(entry.name.clone()))
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(path_tooltip.clone()).build(window, cx)
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                focus.focus(window);
+                                if is_directory {
+                                    this.toggle_tree_directory(
+                                        click_path.clone(),
+                                        traversable,
+                                        window,
+                                        cx,
+                                    );
+                                } else {
+                                    this.request_document_action(
+                                        DocumentAction::OpenTreePath(click_path.clone()),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            }));
+
+                        body = if is_directory {
+                            let menu_path = path.clone();
+                            let app = cx.entity().downgrade();
+                            body.child(row_element.context_menu(move |menu, _, cx| {
+                                app.update(cx, |app, _| {
+                                    app.tree_context_path = Some(menu_path.clone())
+                                })
+                                .ok();
+                                menu.menu("Set as root", Box::new(SetTreeRootContext))
+                            }))
+                        } else {
+                            let menu_path = path.clone();
+                            let app = cx.entity().downgrade();
+                            body.child(row_element.context_menu(move |menu, _, cx| {
+                                app.update(cx, |app, _| {
+                                    app.tree_context_path = Some(menu_path.clone())
+                                })
+                                .ok();
+                                menu.menu("Open", Box::new(OpenTreeContext))
+                            }))
+                        };
+                    }
+                    VisibleRow::Loading {
+                        depth, refreshing, ..
+                    } => {
+                        body = body.child(
+                            div()
+                                .pl(px(24.0 + depth as f32 * 16.0))
+                                .py_1()
+                                .text_xs()
+                                .text_color(rgb(0x70685b))
+                                .child(if refreshing {
+                                    "Refreshing…"
+                                } else {
+                                    "Loading…"
+                                }),
+                        );
+                    }
+                    VisibleRow::Empty { depth, .. } => {
+                        body = body.child(
+                            div()
+                                .pl(px(24.0 + depth as f32 * 16.0))
+                                .py_1()
+                                .text_xs()
+                                .text_color(rgb(0x8b8275))
+                                .child("No Markdown files or folders"),
+                        );
+                    }
+                    VisibleRow::Error {
+                        path,
+                        depth,
+                        message,
+                    } => {
+                        let retry_path = path.clone();
+                        body = body.child(
+                            div()
+                                .h_flex()
+                                .pl(px(24.0 + depth as f32 * 16.0))
+                                .pr_2()
+                                .gap_2()
+                                .text_xs()
+                                .text_color(rgb(0x9b392a))
+                                .child(div().flex_1().min_w_0().truncate().child(message))
+                                .child(
+                                    Button::new(("tree-retry", row_index))
+                                        .label("Retry")
+                                        .small()
+                                        .ghost()
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.load_tree_directory(retry_path.clone(), window, cx)
+                                        })),
+                                ),
+                        );
+                    }
+                }
+            }
+        }
+
+        div()
+            .debug_selector(|| "file-tree-panel".into())
+            .key_context(FILE_TREE_CONTEXT)
+            .track_focus(&self.file_tree_focus)
+            .on_action(cx.listener(|this, _: &FileTreeUp, _, cx| this.move_tree_selection(-1, cx)))
+            .on_action(cx.listener(|this, _: &FileTreeDown, _, cx| this.move_tree_selection(1, cx)))
+            .on_action(cx.listener(|this, _: &FileTreeLeft, _, cx| this.tree_selection_left(cx)))
+            .on_action(cx.listener(|this, _: &FileTreeRight, window, cx| {
+                this.tree_selection_right(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FileTreeOpen, window, cx| {
+                this.open_selected_tree_entry(window, cx)
+            }))
+            .v_flex()
+            .size_full()
+            .min_h_0()
+            .overflow_hidden()
+            .border_r_1()
+            .border_color(rgb(0xd3c8b5))
+            .bg(rgb(0xebe3d4))
+            .child(header)
+            .child(body)
+    }
+
     fn outline_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let sections = markdown::sections(&self.document.content, &self.outline);
         let mut panel = div()
+            .debug_selector(|| "outline-panel".into())
             .v_flex()
-            .w(px(270.0))
-            .min_w(px(220.0))
+            .size_full()
+            .min_w_0()
             .h_full()
             .flex_none()
             .overflow_y_scrollbar()
             .p_3()
             .gap_1()
-            .border_r_1()
+            .border_l_1()
             .border_color(rgb(0xd3c8b5))
             .bg(rgb(0xebe3d4))
             .child(
@@ -1020,47 +1728,49 @@ impl NativeMarkdownApp {
                     .h_flex()
                     .gap_1()
                     .child(
-                        Button::new("outline-jump-mode")
-                            .label("Jump")
-                            .small()
-                            .selected(self.outline_mode == OutlineMode::Jump)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.outline_mode = OutlineMode::Jump;
-                                this.focused_section = None;
-                                if this.selected_heading.is_some() {
-                                    this.outline_jump_request =
-                                        this.outline_jump_request.wrapping_add(1);
-                                }
-                                cx.notify();
-                            })),
+                        state_button(
+                            Button::new("outline-jump-mode").label("Jump").small(),
+                            self.outline_mode == OutlineMode::Jump,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.outline_mode = OutlineMode::Jump;
+                            this.focused_section = None;
+                            if this.selected_heading.is_some() {
+                                this.outline_jump_request =
+                                    this.outline_jump_request.wrapping_add(1);
+                            }
+                            cx.notify();
+                        })),
                     )
                     .child(
-                        Button::new("outline-focus-mode")
-                            .label("Focus")
-                            .small()
-                            .selected(self.outline_mode == OutlineMode::Focus)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.outline_mode = OutlineMode::Focus;
-                                this.focused_section = this.selected_heading.and_then(|heading| {
-                                    markdown::sections(&this.document.content, &this.outline)
-                                        .iter()
-                                        .position(|section| section.heading_index == Some(heading))
-                                });
-                                cx.notify();
-                            })),
+                        state_button(
+                            Button::new("outline-focus-mode").label("Focus").small(),
+                            self.outline_mode == OutlineMode::Focus,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.outline_mode = OutlineMode::Focus;
+                            this.focused_section = this.selected_heading.and_then(|heading| {
+                                markdown::sections(&this.document.content, &this.outline)
+                                    .iter()
+                                    .position(|section| section.heading_index == Some(heading))
+                            });
+                            cx.notify();
+                        })),
                     ),
             )
             .child(
-                Button::new("show-full-document")
-                    .label("Full document")
-                    .small()
-                    .selected(self.focused_section.is_none() && self.selected_heading.is_none())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.focused_section = None;
-                        this.selected_heading = None;
-                        this.view_mode = ViewMode::Preview;
-                        cx.notify();
-                    })),
+                state_button(
+                    Button::new("show-full-document")
+                        .label("Full document")
+                        .small(),
+                    self.focused_section.is_none() && self.selected_heading.is_none(),
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.focused_section = None;
+                    this.selected_heading = None;
+                    this.view_mode = ViewMode::Preview;
+                    cx.notify();
+                })),
             );
 
         for (heading_index, heading) in self.outline.iter().enumerate() {
@@ -1091,6 +1801,15 @@ impl NativeMarkdownApp {
                         this.view_mode = ViewMode::Preview;
                         cx.notify();
                     })),
+            );
+        }
+        if self.outline.is_empty() {
+            panel = panel.child(
+                div()
+                    .p_3()
+                    .text_sm()
+                    .text_color(rgb(0x70685b))
+                    .child("This document has no headings"),
             );
         }
         panel
@@ -1264,29 +1983,100 @@ impl NativeMarkdownApp {
     }
 
     fn workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
-        if self.document.is_empty() {
-            return self.welcome(cx).into_any_element();
-        }
-
-        let content = match self.view_mode {
-            ViewMode::Preview => self.preview_panel(window, cx).into_any_element(),
-            ViewMode::Source => self.editor_panel().into_any_element(),
-            ViewMode::Split => div()
-                .h_flex()
-                .size_full()
-                .child(self.editor_panel())
-                .child(div().w(px(1.0)).h_full().bg(rgb(0xd3c8b5)))
-                .child(self.preview_panel(window, cx))
-                .into_any_element(),
+        let content = if self.document.is_empty() {
+            self.welcome(cx).into_any_element()
+        } else {
+            match self.view_mode {
+                ViewMode::Preview => self.preview_panel(window, cx).into_any_element(),
+                ViewMode::Source => self.editor_panel().into_any_element(),
+                ViewMode::Split => div()
+                    .h_flex()
+                    .size_full()
+                    .child(self.editor_panel())
+                    .child(div().w(px(1.0)).h_full().bg(rgb(0xd3c8b5)))
+                    .child(self.preview_panel(window, cx))
+                    .into_any_element(),
+            }
         };
+
+        let width: f32 = window.viewport_size().width.into();
+        let (regular_tree, regular_outline, overlay_tree, overlay_outline) =
+            self.responsive_panel_visibility(width);
+        let app = cx.entity().downgrade();
+        let resizable = h_resizable("document-workspace-panels")
+            .with_state(&self.workspace_resizable)
+            .on_resize(move |state, _, cx| {
+                let sizes = state.read(cx).sizes().clone();
+                if sizes.len() != 3 {
+                    return;
+                }
+                let file_tree_width: f32 = sizes[0].into();
+                let outline_width: f32 = sizes[2].into();
+                app.update(cx, |app, _| {
+                    let mut settings = LayoutSettings {
+                        file_tree_open: app.file_tree_open,
+                        outline_open: app.outline_open,
+                        file_tree_width: app.file_tree_width,
+                        outline_width: app.outline_width,
+                    };
+                    settings.set_widths(file_tree_width, outline_width);
+                    app.file_tree_width = settings.file_tree_width;
+                    app.outline_width = settings.outline_width;
+                    let _ = settings.save();
+                })
+                .ok();
+            })
+            .child(
+                resizable_panel()
+                    .visible(regular_tree)
+                    .size(px(self.file_tree_width))
+                    .size_range(px(120.0)..px(520.0))
+                    .child(self.file_tree_panel(cx)),
+            )
+            .child(
+                resizable_panel()
+                    .size_range(px(420.0)..px(10_000.0))
+                    .child(content),
+            )
+            .child(
+                resizable_panel()
+                    .visible(regular_outline)
+                    .size(px(self.outline_width))
+                    .size_range(px(120.0)..px(520.0))
+                    .child(self.outline_panel(cx)),
+            );
 
         div()
             .debug_selector(|| "document-workspace".into())
-            .h_flex()
+            .relative()
             .flex_1()
             .min_h_0()
-            .when(self.outline_open, |view| view.child(self.outline_panel(cx)))
-            .child(content)
+            .overflow_hidden()
+            .child(resizable)
+            .when(overlay_tree, |view| {
+                view.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .bottom_0()
+                        .w(px(self.file_tree_width))
+                        .shadow_lg()
+                        .child(self.file_tree_panel(cx)),
+                )
+            })
+            .when(overlay_outline, |view| {
+                view.child(
+                    div()
+                        .absolute()
+                        .right_0()
+                        .top_0()
+                        .bottom_0()
+                        .w(px(self.outline_width))
+                        .shadow_lg()
+                        .child(self.outline_panel(cx)),
+                )
+            })
             .into_any_element()
     }
 
@@ -1387,13 +2177,23 @@ impl Render for NativeMarkdownApp {
             .on_action(cx.listener(|this, _: &ZoomIn, window, cx| this.zoom_in(window, cx)))
             .on_action(cx.listener(|this, _: &ZoomOut, window, cx| this.zoom_out(window, cx)))
             .on_action(cx.listener(|this, _: &ResetZoom, window, cx| this.reset_zoom(window, cx)))
+            .on_action(cx.listener(|this, _: &OpenTreeContext, window, cx| {
+                if let Some(path) = this.tree_context_path.clone() {
+                    this.request_document_action(DocumentAction::OpenTreePath(path), window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &SetTreeRootContext, window, cx| {
+                if let Some(path) = this.tree_context_path.clone() {
+                    this.set_file_tree_root(Some(path), window, cx);
+                }
+            }))
             .on_drop(cx.listener(Self::handle_drop))
             .v_flex()
             .size_full()
             .overflow_hidden()
             .bg(rgb(0xf6f1e7))
             .text_color(rgb(0x292723))
-            .child(self.toolbar(cx))
+            .child(self.toolbar(window, cx))
             .when(self.search_open, |view| view.child(self.search_bar(cx)))
             .child(self.workspace(window, cx))
             .child(self.status_bar(cx))
@@ -1560,6 +2360,107 @@ mod tests {
             preview.size.height,
             workspace.size.height
         );
+    }
+
+    #[gpui::test]
+    fn tree_open_preserves_view_root_and_current_file_no_op(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first.md");
+        let nested = directory.path().join("nested");
+        let second = nested.join("second.md");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(&first, "# First").unwrap();
+        std::fs::write(&second, "# Second").unwrap();
+        let image_root = DocumentImageRoot::default();
+
+        let (app, cx) = cx.add_window_view(|window, cx| {
+            NativeMarkdownApp::new(Some(first.clone()), image_root, window, cx)
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.view_mode = ViewMode::Source;
+                app.open_tree_path(second.clone(), window, cx);
+                assert_eq!(app.document.path.as_deref(), Some(second.as_path()));
+                assert_eq!(app.file_tree.root(), Some(directory.path()));
+                assert_eq!(app.view_mode, ViewMode::Source);
+            });
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.document.content = "unsaved edit".to_owned();
+                app.request_document_action(
+                    DocumentAction::OpenTreePath(second.clone()),
+                    window,
+                    cx,
+                );
+            });
+        });
+        assert!(!cx.has_pending_prompt());
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.document.content, "unsaved edit");
+            assert_eq!(app.view_mode, ViewMode::Source);
+        });
+    }
+
+    #[gpui::test]
+    fn external_open_rehomes_tree_and_uses_preview(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first.md");
+        let other = directory.path().join("other");
+        let second = other.join("second.md");
+        std::fs::create_dir(&other).unwrap();
+        std::fs::write(&first, "# First").unwrap();
+        std::fs::write(&second, "# Second").unwrap();
+        let image_root = DocumentImageRoot::default();
+
+        let (app, cx) = cx.add_window_view(|window, cx| {
+            NativeMarkdownApp::new(Some(first), image_root, window, cx)
+        });
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.view_mode = ViewMode::Split;
+                app.open_path(second.clone(), window, cx);
+                assert_eq!(app.document.path.as_deref(), Some(second.as_path()));
+                assert_eq!(app.file_tree.root(), Some(other.as_path()));
+                assert_eq!(app.view_mode, ViewMode::Preview);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn sidebars_render_on_opposite_sides_and_hide_responsively(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("layout.md");
+        std::fs::write(&path, "# Layout\n\n## Section").unwrap();
+        let image_root = DocumentImageRoot::default();
+        let (app, cx) = cx.add_window_view(|window, cx| {
+            NativeMarkdownApp::new(Some(path), image_root, window, cx)
+        });
+
+        cx.simulate_resize(size(px(1180.0), px(780.0)));
+        app.update(cx, |_, cx| cx.notify());
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        let tree = cx.debug_bounds("file-tree-panel").unwrap();
+        let preview = cx.debug_bounds("preview-panel").unwrap();
+        let outline = cx.debug_bounds("outline-panel").unwrap();
+        assert!(tree.origin.x + tree.size.width <= preview.origin.x);
+        assert!(outline.origin.x >= preview.origin.x + preview.size.width);
+
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                app.responsive_panel_visibility(900.0),
+                (true, false, false, false)
+            );
+            assert_eq!(
+                app.responsive_panel_visibility(700.0),
+                (false, false, false, false)
+            );
+        });
     }
 
     #[gpui::test]

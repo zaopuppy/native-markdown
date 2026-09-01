@@ -1,8 +1,10 @@
 mod app;
 mod benchmark;
 mod document;
+mod file_tree;
 mod image_cache;
 mod image_loader;
+mod layout_settings;
 mod markdown;
 mod mermaid;
 mod zoom;
