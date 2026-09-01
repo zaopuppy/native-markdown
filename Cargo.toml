@@ -11,13 +11,16 @@ gpui = "0.2.2"
 gpui-component = "0.5.1"
 gpui_http_client = "0.2.2"
 image = { version = "0.25.10", default-features = false }
+merman = { version = "=0.7.0", features = ["render"] }
 pulldown-cmark = "0.12"
+resvg = "0.45.1"
 rfd = "0.15"
+sha2 = "0.10"
 smol = "2"
 tempfile = "3.12"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_System_ProcessStatus", "Win32_System_Threading"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
 
 [dev-dependencies]
 gpui = { version = "0.2.2", features = ["test-support"] }

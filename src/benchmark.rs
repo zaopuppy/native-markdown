@@ -226,34 +226,17 @@ pub struct MemorySample {
 impl MemorySample {
     #[cfg(target_os = "windows")]
     pub fn capture() -> Result<Self, String> {
-        use std::mem::{size_of, zeroed};
-        use windows_sys::Win32::System::ProcessStatus::{
-            GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX2,
-        };
-        use windows_sys::Win32::System::Threading::GetCurrentProcess;
-
-        let mut counters: PROCESS_MEMORY_COUNTERS_EX2 = unsafe { zeroed() };
-        counters.cb = size_of::<PROCESS_MEMORY_COUNTERS_EX2>() as u32;
-        let ok = unsafe {
-            GetProcessMemoryInfo(
-                GetCurrentProcess(),
-                (&mut counters as *mut PROCESS_MEMORY_COUNTERS_EX2)
-                    .cast::<PROCESS_MEMORY_COUNTERS>(),
-                counters.cb,
-            )
-        };
-        if ok == 0 {
-            return Err(format!(
-                "GetProcessMemoryInfo failed: {}",
-                std::io::Error::last_os_error()
-            ));
+        let mut sample = capture_windows_process(None)?;
+        if let Some(worker_pid) = crate::mermaid::worker_pid() {
+            if let Ok(worker) = capture_windows_process(Some(worker_pid)) {
+                sample.working_set = sample.working_set.saturating_add(worker.working_set);
+                sample.private_working_set = sample
+                    .private_working_set
+                    .saturating_add(worker.private_working_set);
+                sample.private_bytes = sample.private_bytes.saturating_add(worker.private_bytes);
+            }
         }
-
-        Ok(Self {
-            working_set: counters.WorkingSetSize as u64,
-            private_working_set: counters.PrivateWorkingSetSize as u64,
-            private_bytes: counters.PrivateUsage as u64,
-        })
+        Ok(sample)
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -269,6 +252,65 @@ impl MemorySample {
             private_bytes: mib(private_bytes),
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn capture_windows_process(pid: Option<u32>) -> Result<MemorySample, String> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ,
+    };
+
+    let (process, close_after) = match pid {
+        Some(pid) => {
+            let process =
+                unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid) };
+            if process.is_null() {
+                return Err(format!(
+                    "OpenProcess({pid}) failed: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            (process, true)
+        }
+        None => (unsafe { GetCurrentProcess() }, false),
+    };
+
+    let result = (|| {
+        use std::mem::{size_of, zeroed};
+        use windows_sys::Win32::System::ProcessStatus::{
+            GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX2,
+        };
+
+        let mut counters: PROCESS_MEMORY_COUNTERS_EX2 = unsafe { zeroed() };
+        counters.cb = size_of::<PROCESS_MEMORY_COUNTERS_EX2>() as u32;
+        let ok = unsafe {
+            GetProcessMemoryInfo(
+                process,
+                (&mut counters as *mut PROCESS_MEMORY_COUNTERS_EX2)
+                    .cast::<PROCESS_MEMORY_COUNTERS>(),
+                counters.cb,
+            )
+        };
+        if ok == 0 {
+            return Err(format!(
+                "GetProcessMemoryInfo failed: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        Ok(MemorySample {
+            working_set: counters.WorkingSetSize as u64,
+            private_working_set: counters.PrivateWorkingSetSize as u64,
+            private_bytes: counters.PrivateUsage as u64,
+        })
+    })();
+    if close_after {
+        unsafe {
+            CloseHandle(process);
+        }
+    }
+    result
 }
 
 pub struct BenchmarkMetrics {
@@ -362,6 +404,20 @@ pub fn start(
     window
         .spawn(cx, async move |cx| {
             smol::Timer::after(config.warmup).await;
+            let mermaid_status = cx
+                .update(|_, cx| {
+                    app.update(cx, |app, _| app.mermaid_benchmark_status())
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default();
+            println!(
+                "NATIVE_MARKDOWN_BENCHMARK event=mermaid blocks={} ready={} pending={} errors={} worker_pid={}",
+                mermaid_status.0,
+                mermaid_status.1,
+                mermaid_status.2,
+                mermaid_status.3,
+                crate::mermaid::worker_pid().unwrap_or_default(),
+            );
             let baseline = match MemorySample::capture() {
                 Ok(sample) => sample,
                 Err(error) => {

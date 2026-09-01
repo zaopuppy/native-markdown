@@ -4,6 +4,7 @@ mod document;
 mod image_cache;
 mod image_loader;
 mod markdown;
+mod mermaid;
 mod zoom;
 
 use std::path::PathBuf;
@@ -15,6 +16,10 @@ use gpui_component::{Root, Theme};
 use image_loader::{DocumentImageClient, DocumentImageRoot};
 
 fn main() {
+    if mermaid::run_worker_if_requested() {
+        return;
+    }
+
     let benchmark_config = match benchmark::BenchmarkConfig::from_env() {
         Ok(config) => config,
         Err(error) => {

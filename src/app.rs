@@ -7,7 +7,7 @@ use gpui::{
     Resource, ScrollWheelEvent, SharedString, Subscription, Window,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::input::{Input, InputEvent, InputState, Position};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::text::TextView;
 use gpui_component::{Selectable as _, Sizable as _, StyledExt as _, Theme};
@@ -18,6 +18,7 @@ use crate::document::Document;
 use crate::image_cache::{BudgetImageCache, WARNING_THRESHOLD_BYTES};
 use crate::image_loader::DocumentImageRoot;
 use crate::markdown::{self, Heading, SearchHit};
+use crate::mermaid::{self, MermaidManager, OPEN_TIMEOUT};
 use crate::zoom::ZoomLevel;
 
 const APP_CONTEXT: &str = "NativeMarkdown";
@@ -96,7 +97,6 @@ pub struct NativeMarkdownApp {
     document: Document,
     editor: Entity<InputState>,
     search_input: Entity<InputState>,
-    markdown: SharedString,
     outline: Vec<Heading>,
     word_count: usize,
     reading_minutes: usize,
@@ -114,10 +114,20 @@ pub struct NativeMarkdownApp {
     dialog_in_flight: bool,
     image_cache: Entity<BudgetImageCache>,
     image_root: DocumentImageRoot,
+    mermaid: MermaidManager,
     _subscriptions: Vec<Subscription>,
 }
 
 impl NativeMarkdownApp {
+    pub(crate) fn mermaid_benchmark_status(&self) -> (usize, usize, usize, usize) {
+        (
+            self.mermaid.block_count(),
+            self.mermaid.ready_count(),
+            self.mermaid.pending_count(),
+            self.mermaid.error_count(),
+        )
+    }
+
     pub(crate) fn run_benchmark_step(
         &mut self,
         scenario: BenchmarkScenario,
@@ -148,7 +158,7 @@ impl NativeMarkdownApp {
                 let phase = step % 30;
                 let tenths = if phase <= 15 { 10 + phase } else { 40 - phase };
                 self.zoom = ZoomLevel::from_factor(tenths as f32 / 10.0);
-                self.apply_zoom(cx);
+                self.apply_zoom(window, cx);
             }
             BenchmarkScenario::Reopen => {
                 if let Some(path) = self.document.path.clone() {
@@ -208,10 +218,11 @@ impl NativeMarkdownApp {
             cx.subscribe_in(
                 &editor,
                 window,
-                |this: &mut Self, editor, event: &InputEvent, _, cx| {
+                |this: &mut Self, editor, event: &InputEvent, window, cx| {
                     if matches!(event, InputEvent::Change) {
                         this.document.content = editor.read(cx).value().to_string();
                         this.refresh_analysis();
+                        this.refresh_mermaid(mermaid::EDIT_TIMEOUT, window, cx);
                         if let Err(error) = this.document.maybe_write_recovery() {
                             this.set_notice(format!("Recovery copy failed: {error}"), true);
                         }
@@ -247,17 +258,15 @@ impl NativeMarkdownApp {
         })
         .detach();
 
-        let markdown: SharedString = document.content.clone().into();
         let outline = markdown::headings(&document.content);
         let word_count = markdown::word_count(&document.content);
         let reading_minutes = markdown::reading_minutes(word_count);
         let last_path = document.path.clone().or(initial_path);
 
-        Self {
+        let mut app = Self {
             document,
             editor,
             search_input,
-            markdown,
             outline,
             word_count,
             reading_minutes,
@@ -275,8 +284,11 @@ impl NativeMarkdownApp {
             dialog_in_flight: false,
             image_cache,
             image_root,
+            mermaid: MermaidManager::new(),
             _subscriptions: subscriptions,
-        }
+        };
+        app.refresh_mermaid(OPEN_TIMEOUT, window, cx);
+        app
     }
 
     pub fn should_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -290,7 +302,6 @@ impl NativeMarkdownApp {
     }
 
     fn refresh_analysis(&mut self) {
-        self.markdown = self.document.content.clone().into();
         self.outline = markdown::headings(&self.document.content);
         self.word_count = markdown::word_count(&self.document.content);
         self.reading_minutes = markdown::reading_minutes(self.word_count);
@@ -298,6 +309,62 @@ impl NativeMarkdownApp {
         self.preview_section = self.preview_section.filter(|section| {
             *section < markdown::sections(&self.document.content, &self.outline).len()
         });
+    }
+
+    fn refresh_mermaid(&mut self, timeout: Duration, window: &mut Window, cx: &mut Context<Self>) {
+        let jobs = self.mermaid.refresh(&self.document.content, timeout);
+        self.image_root
+            .retain_mermaid_svgs(&self.mermaid.referenced_assets());
+        for job in jobs {
+            let worker = self.mermaid.worker();
+            let app = cx.entity().downgrade();
+            window
+                .spawn(cx, async move |cx| {
+                    smol::Timer::after(Duration::from_millis(200)).await;
+                    let should_render = cx
+                        .update(|_, cx| {
+                            app.update(cx, |app, _| app.mermaid.needs_result(&job.source_key))
+                                .unwrap_or(false)
+                        })
+                        .unwrap_or(false);
+                    if !should_render {
+                        let _ = cx.update(|_, cx| {
+                            app.update(cx, |app, _| app.mermaid.cancel_pending(&job.source_key))
+                                .ok();
+                        });
+                        return;
+                    }
+
+                    let result = worker
+                        .render(job.source, job.timeout)
+                        .await
+                        .unwrap_or_else(|_| Err("Mermaid worker stopped unexpectedly".to_owned()));
+                    let _ = cx.update(|window, cx| {
+                        app.update(cx, |app, cx| {
+                            app.complete_mermaid_render(&job.source_key, result, window, cx)
+                        })
+                        .ok();
+                    });
+                })
+                .detach();
+        }
+    }
+
+    fn complete_mermaid_render(
+        &mut self,
+        source_key: &str,
+        result: Result<String, String>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(svg) = self.mermaid.apply_result(source_key, result) {
+            if let Err(error) = self.image_root.insert_mermaid_svg(source_key, svg) {
+                self.mermaid.apply_result(source_key, Err(error));
+            }
+        }
+        self.image_root
+            .retain_mermaid_svgs(&self.mermaid.referenced_assets());
+        cx.notify();
     }
 
     fn run_background_maintenance(&mut self) -> bool {
@@ -339,6 +406,7 @@ impl NativeMarkdownApp {
         cx: &mut Context<Self>,
     ) {
         self.release_document_images(window, cx);
+        self.mermaid.reset();
         self.document = document;
         self.last_path.clone_from(&self.document.path);
         self.image_root
@@ -351,6 +419,7 @@ impl NativeMarkdownApp {
             editor.set_value(self.document.content.clone(), window, cx)
         });
         self.refresh_analysis();
+        self.refresh_mermaid(OPEN_TIMEOUT, window, cx);
         self.recovery_available = Document::recovery_exists();
         cx.notify();
     }
@@ -360,6 +429,18 @@ impl NativeMarkdownApp {
             .update(cx, |cache, cx| cache.clear(window, cx));
         for uri in self.image_root.take_requested_resources() {
             let resource = Resource::Uri(uri.into());
+            if let Some(Ok(image)) = window.get_asset::<ImgResourceLoader>(&resource, cx) {
+                cx.drop_image(image, Some(window));
+            }
+            cx.remove_asset::<ImgResourceLoader>(&resource);
+        }
+    }
+
+    fn release_mermaid_images(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for uri in self.image_root.take_mermaid_requested_resources() {
+            let resource = Resource::Uri(uri.into());
+            self.image_cache
+                .update(cx, |cache, cx| cache.remove_resource(&resource, window, cx));
             if let Some(Ok(image)) = window.get_asset::<ImgResourceLoader>(&resource, cx) {
                 cx.drop_image(image, Some(window));
             }
@@ -608,58 +689,73 @@ impl NativeMarkdownApp {
         cx.notify();
     }
 
-    fn next_hit(&mut self, cx: &mut Context<Self>) {
+    fn next_hit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.search_hits.is_empty() {
             self.active_hit = (self.active_hit + 1) % self.search_hits.len();
-            self.preview_section = Some(self.search_hits[self.active_hit].section_index);
-            self.view_mode = ViewMode::Preview;
-            cx.notify();
+            self.activate_search_hit(window, cx);
         }
     }
 
-    fn previous_hit(&mut self, cx: &mut Context<Self>) {
+    fn previous_hit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.search_hits.is_empty() {
             self.active_hit = if self.active_hit == 0 {
                 self.search_hits.len() - 1
             } else {
                 self.active_hit - 1
             };
-            self.preview_section = Some(self.search_hits[self.active_hit].section_index);
-            self.view_mode = ViewMode::Preview;
-            cx.notify();
+            self.activate_search_hit(window, cx);
         }
     }
 
-    fn apply_zoom(&self, cx: &mut Context<Self>) {
+    fn activate_search_hit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(hit) = self.search_hits.get(self.active_hit) else {
+            return;
+        };
+        if let Some(offset) = hit.source_offset {
+            let position = byte_offset_position(&self.document.content, offset);
+            self.view_mode = ViewMode::Split;
+            self.preview_section = None;
+            self.editor.update(cx, |editor, cx| {
+                editor.set_cursor_position(position, window, cx)
+            });
+        } else {
+            self.preview_section = Some(hit.section_index);
+            self.view_mode = ViewMode::Preview;
+        }
+        cx.notify();
+    }
+
+    fn apply_zoom(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let factor = self.zoom.factor();
         let theme = Theme::global_mut(cx);
         theme.font_size = px(BASE_FONT_SIZE * factor);
         theme.mono_font_size = px(BASE_MONO_FONT_SIZE * factor);
+        self.release_mermaid_images(window, cx);
         cx.notify();
     }
 
-    fn zoom_in(&mut self, cx: &mut Context<Self>) {
+    fn zoom_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.zoom.zoom_in() {
-            self.apply_zoom(cx);
+            self.apply_zoom(window, cx);
         }
     }
 
-    fn zoom_out(&mut self, cx: &mut Context<Self>) {
+    fn zoom_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.zoom.zoom_out() {
-            self.apply_zoom(cx);
+            self.apply_zoom(window, cx);
         }
     }
 
-    fn reset_zoom(&mut self, cx: &mut Context<Self>) {
+    fn reset_zoom(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.zoom.reset() {
-            self.apply_zoom(cx);
+            self.apply_zoom(window, cx);
         }
     }
 
     fn handle_scroll_wheel(
         &mut self,
         event: &ScrollWheelEvent,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if !event.modifiers.control {
@@ -669,7 +765,7 @@ impl NativeMarkdownApp {
         let delta_y: f32 = event.delta.pixel_delta(px(20.0)).y.into();
         let factor = (delta_y * 0.0025).exp();
         if self.zoom.apply_gesture(factor) {
-            self.apply_zoom(cx);
+            self.apply_zoom(window, cx);
         }
         cx.stop_propagation();
     }
@@ -811,21 +907,21 @@ impl NativeMarkdownApp {
                     .label("−")
                     .small()
                     .ghost()
-                    .on_click(cx.listener(|this, _, _, cx| this.zoom_out(cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.zoom_out(window, cx))),
             )
             .child(
                 Button::new("reset-zoom")
                     .label(format!("{}%", self.zoom.percent()))
                     .small()
                     .ghost()
-                    .on_click(cx.listener(|this, _, _, cx| this.reset_zoom(cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.reset_zoom(window, cx))),
             )
             .child(
                 Button::new("zoom-in")
                     .label("+")
                     .small()
                     .ghost()
-                    .on_click(cx.listener(|this, _, _, cx| this.zoom_in(cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.zoom_in(window, cx))),
             )
     }
 
@@ -859,13 +955,13 @@ impl NativeMarkdownApp {
                 Button::new("previous-hit")
                     .label("Previous")
                     .small()
-                    .on_click(cx.listener(|this, _, _, cx| this.previous_hit(cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.previous_hit(window, cx))),
             )
             .child(
                 Button::new("next-hit")
                     .label("Next")
                     .small()
-                    .on_click(cx.listener(|this, _, _, cx| this.next_hit(cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.next_hit(window, cx))),
             )
             .child(div().flex_1())
             .child(
@@ -931,27 +1027,37 @@ impl NativeMarkdownApp {
         panel
     }
 
-    fn preview_source(&self) -> SharedString {
-        let Some(section_index) = self.preview_section else {
-            return self.markdown.clone();
-        };
-        markdown::sections(&self.document.content, &self.outline)
-            .get(section_index)
-            .map(|section| {
-                self.document.content[section.range.clone()]
-                    .to_owned()
-                    .into()
+    fn preview_source(&self, viewport_width: u32) -> SharedString {
+        let range = self
+            .preview_section
+            .and_then(|section_index| {
+                markdown::sections(&self.document.content, &self.outline)
+                    .get(section_index)
+                    .map(|section| section.range.clone())
             })
-            .unwrap_or_else(|| self.markdown.clone())
+            .unwrap_or(0..self.document.content.len());
+        self.mermaid
+            .transform_range(
+                &self.document.content,
+                range,
+                viewport_width,
+                self.zoom.percent(),
+            )
+            .into()
     }
 
     fn preview_panel(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let logical_width: f32 = window.viewport_size().width.into();
-        self.image_root.set_viewport_width(
-            (logical_width * window.scale_factor())
-                .ceil()
-                .clamp(1.0, u32::MAX as f32) as u32,
-        );
+        let panel_fraction = if self.view_mode == ViewMode::Split {
+            0.5
+        } else {
+            1.0
+        };
+        let viewport_width = (logical_width * panel_fraction * window.scale_factor())
+            .ceil()
+            .clamp(1.0, 1_280.0) as u32;
+        self.image_root.set_viewport_width(viewport_width);
+        let app = cx.entity().downgrade();
         div()
             .debug_selector(|| "preview-panel".into())
             .flex_1()
@@ -965,15 +1071,50 @@ impl NativeMarkdownApp {
                     div().size_full().px_5().child(
                         TextView::markdown(
                             "native-markdown-preview",
-                            self.preview_source(),
+                            self.preview_source(viewport_width),
                             window,
                             cx,
                         )
                         .selectable(true)
-                        .scrollable(true),
+                        .scrollable(true)
+                        .code_block_actions(move |code_block, _, _| {
+                            let Some(index) = mermaid::action_block_index(
+                                code_block.lang().as_deref().map(|value| &**value),
+                            ) else {
+                                return div().into_any_element();
+                            };
+                            let app = app.clone();
+                            Button::new(("mermaid-view-source", index))
+                                .label("View source")
+                                .small()
+                                .on_click(move |_, window, cx| {
+                                    app.update(cx, |app, cx| {
+                                        app.show_mermaid_source(index, window, cx)
+                                    })
+                                    .ok();
+                                })
+                                .into_any_element()
+                        }),
                     ),
                 ),
             )
+    }
+
+    fn show_mermaid_source(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(range) = self.mermaid.block_body_range(index) else {
+            return;
+        };
+        let position = byte_offset_position(&self.document.content, range.start);
+        self.view_mode = ViewMode::Split;
+        self.preview_section = None;
+        self.editor.update(cx, |editor, cx| {
+            editor.set_cursor_position(position, window, cx)
+        });
+        self.set_notice(
+            format!("Mermaid source at line {}", position.line + 1),
+            false,
+        );
+        cx.notify();
     }
 
     fn editor_panel(&self) -> impl IntoElement {
@@ -1093,6 +1234,13 @@ impl NativeMarkdownApp {
         } else {
             String::new()
         };
+        let mermaid_status = match self.mermaid.error_count() {
+            0 => String::new(),
+            count => format!(
+                " · {count} Mermaid error{}",
+                if count == 1 { "" } else { "s" }
+            ),
+        };
         let left = self.notice.as_ref().map_or_else(
             || {
                 if self.document.is_dirty() {
@@ -1123,7 +1271,7 @@ impl NativeMarkdownApp {
             .text_color(rgb(0x70685b))
             .child(div().text_color(left_color).child(left))
             .child(format!(
-                "{} words · {} min read · {} · {}% · {} local images{image_status}",
+                "{} words · {} min read · {} · {}% · {} local images{image_status}{mermaid_status}",
                 self.word_count,
                 self.reading_minutes,
                 self.view_mode.label(),
@@ -1167,9 +1315,9 @@ impl Render for NativeMarkdownApp {
             .on_action(
                 cx.listener(|this, _: &ShowSource, _, cx| this.set_view_mode(ViewMode::Source, cx)),
             )
-            .on_action(cx.listener(|this, _: &ZoomIn, _, cx| this.zoom_in(cx)))
-            .on_action(cx.listener(|this, _: &ZoomOut, _, cx| this.zoom_out(cx)))
-            .on_action(cx.listener(|this, _: &ResetZoom, _, cx| this.reset_zoom(cx)))
+            .on_action(cx.listener(|this, _: &ZoomIn, window, cx| this.zoom_in(window, cx)))
+            .on_action(cx.listener(|this, _: &ZoomOut, window, cx| this.zoom_out(window, cx)))
+            .on_action(cx.listener(|this, _: &ResetZoom, window, cx| this.reset_zoom(window, cx)))
             .on_drop(cx.listener(Self::handle_drop))
             .v_flex()
             .size_full()
@@ -1181,6 +1329,15 @@ impl Render for NativeMarkdownApp {
             .child(self.workspace(window, cx))
             .child(self.status_bar(cx))
     }
+}
+
+fn byte_offset_position(source: &str, offset: usize) -> Position {
+    let offset = offset.min(source.len());
+    let before = &source[..offset];
+    let line = before.bytes().filter(|byte| *byte == b'\n').count() as u32;
+    let line_start = before.rfind('\n').map_or(0, |index| index + 1);
+    let character = before[line_start..].chars().count() as u32;
+    Position::new(line, character)
 }
 
 #[cfg(test)]

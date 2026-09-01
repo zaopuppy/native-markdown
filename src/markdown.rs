@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Heading {
@@ -19,6 +19,7 @@ pub struct Section {
 pub struct SearchHit {
     pub section_index: usize,
     pub snippet: String,
+    pub source_offset: Option<usize>,
 }
 
 pub fn parser_options() -> Options {
@@ -89,11 +90,20 @@ pub fn sections(markdown: &str, headings: &[Heading]) -> Vec<Section> {
     result
 }
 
-pub fn plain_text(markdown: &str) -> String {
+fn reading_text(markdown: &str) -> String {
+    plain_text_with_mermaid(markdown, false)
+}
+
+fn plain_text_with_mermaid(markdown: &str, include_mermaid: bool) -> String {
     let mut output = String::new();
+    let mut in_mermaid = false;
     for event in Parser::new_ext(markdown, parser_options()) {
         match event {
-            Event::Text(text) | Event::Code(text) => {
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) => {
+                in_mermaid = info.trim().eq_ignore_ascii_case("mermaid");
+            }
+            Event::End(TagEnd::CodeBlock) => in_mermaid = false,
+            Event::Text(text) | Event::Code(text) if include_mermaid || !in_mermaid => {
                 output.push_str(&text);
                 output.push(' ');
             }
@@ -109,7 +119,7 @@ pub fn plain_text(markdown: &str) -> String {
 }
 
 pub fn word_count(markdown: &str) -> usize {
-    plain_text(markdown).split_whitespace().count()
+    reading_text(markdown).split_whitespace().count()
 }
 
 pub fn reading_minutes(words: usize) -> usize {
@@ -124,7 +134,8 @@ pub fn search(markdown: &str, query: &str, headings: &[Heading]) -> Vec<SearchHi
 
     let mut hits = Vec::new();
     for (section_index, section) in sections(markdown, headings).iter().enumerate() {
-        let lowercase = plain_text(&markdown[section.range.clone()]).to_lowercase();
+        let section_source = &markdown[section.range.clone()];
+        let lowercase = plain_text_with_mermaid(section_source, false).to_lowercase();
         for (offset, _) in lowercase.match_indices(&query) {
             let start = lowercase[..offset]
                 .char_indices()
@@ -143,10 +154,78 @@ pub fn search(markdown: &str, query: &str, headings: &[Heading]) -> Vec<SearchHi
             hits.push(SearchHit {
                 section_index,
                 snippet,
+                source_offset: None,
             });
+        }
+
+        for range in mermaid_body_ranges(section_source) {
+            let body = &section_source[range.clone()];
+            let (lowercase, source_offsets) = lowercase_with_source_offsets(body);
+            for (offset, _) in lowercase.match_indices(&query) {
+                let start = lowercase[..offset]
+                    .char_indices()
+                    .rev()
+                    .nth(24)
+                    .map_or(0, |(index, _)| index);
+                let tail = (offset + query.len()).min(lowercase.len());
+                let end = lowercase[tail..]
+                    .char_indices()
+                    .nth(36)
+                    .map_or(lowercase.len(), |(index, _)| tail + index);
+                hits.push(SearchHit {
+                    section_index,
+                    snippet: lowercase[start..end]
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    source_offset: Some(section.range.start + range.start + source_offsets[offset]),
+                });
+            }
         }
     }
     hits
+}
+
+fn lowercase_with_source_offsets(source: &str) -> (String, Vec<usize>) {
+    let mut lowercase = String::new();
+    let mut source_offsets = Vec::new();
+    for (source_offset, character) in source.char_indices() {
+        for folded in character.to_lowercase() {
+            lowercase.push(folded);
+            source_offsets.extend(std::iter::repeat_n(source_offset, folded.len_utf8()));
+        }
+    }
+    source_offsets.push(source.len());
+    (lowercase, source_offsets)
+}
+
+fn mermaid_body_ranges(markdown: &str) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut in_mermaid = false;
+    let mut body_start = None;
+    let mut body_end = 0;
+    for (event, range) in Parser::new_ext(markdown, parser_options()).into_offset_iter() {
+        match event {
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info)))
+                if info.trim().eq_ignore_ascii_case("mermaid") =>
+            {
+                in_mermaid = true;
+                body_start = None;
+                body_end = 0;
+            }
+            Event::Text(_) if in_mermaid => {
+                body_start.get_or_insert(range.start);
+                body_end = range.end;
+            }
+            Event::End(TagEnd::CodeBlock) if in_mermaid => {
+                in_mermaid = false;
+                let start = body_start.take().unwrap_or(range.start);
+                ranges.push(start..body_end.max(start));
+            }
+            _ => {}
+        }
+    }
+    ranges
 }
 
 fn heading_level(level: HeadingLevel) -> u8 {
@@ -187,10 +266,27 @@ mod tests {
     }
 
     #[test]
+    fn search_marks_mermaid_source_hits_with_original_offsets() {
+        let source = "# Diagram\n\n```mermaid\nflowchart LR\nAlpha-->Beta\n```";
+        let outline = headings(source);
+        let hits = search(source, "Alpha", &outline);
+        assert_eq!(hits.len(), 1);
+        let offset = hits[0].source_offset.unwrap();
+        assert_eq!(&source[offset..offset + "Alpha".len()], "Alpha");
+    }
+
+    #[test]
     fn parser_preserves_chinese_text() {
         let source = "# 1.理解大语言模型\n\n大语言模型可以生成新的文本。";
         let outline = headings(source);
         assert_eq!(outline[0].title, "1.理解大语言模型");
-        assert!(plain_text(source).contains("大语言模型可以生成新的文本"));
+        assert!(plain_text_with_mermaid(source, true).contains("大语言模型可以生成新的文本"));
+    }
+
+    #[test]
+    fn word_count_excludes_mermaid_but_search_text_keeps_it() {
+        let source = "Visible words\n\n```mermaid\nflowchart LR\nAlpha-->Beta\n```";
+        assert_eq!(word_count(source), 2);
+        assert!(plain_text_with_mermaid(source, true).contains("Alpha-->Beta"));
     }
 }

@@ -7,6 +7,7 @@ A quiet, reader-first Markdown desktop app built with Rust and GPUI Component. D
 - **Reader-first preview**: Preview is the default, with optional split and source-only modes
 - **Preview and source modes**: Switch between preview, split, and source-only layouts
 - **Native Markdown rendering**: Headings, tables, task lists, strikethrough, links, local images, highlighted code blocks, and simple inline HTML
+- **Offline Mermaid diagrams**: Fenced `mermaid` blocks render through an isolated native worker, with no browser, WebView, Node, or network service
 - **Document outline**: Collapsible heading navigation for long documents
 - **Find**: Search rendered text and jump between matching sections
 - **Safe file lifecycle**: Atomic saves, Save As, dirty-state warnings, visible errors, and background recovery
@@ -28,6 +29,12 @@ A quiet, reader-first Markdown desktop app built with Rust and GPUI Component. D
 | Zoom in / out / reset | `Ctrl++` / `Ctrl+-` / `Ctrl+0` |
 
 Use `Ctrl+mouse-wheel` for smooth zooming. Set `NATIVE_MARKDOWN_REMOTE_IMAGES=1` before launch only when a document is allowed to load remote images.
+
+## Mermaid compatibility
+
+Mermaid rendering uses the pinned native `merman 0.7.0` renderer and targets Mermaid 11.15 syntax. Flowchart, sequence, class, state, ER, Gantt, pie, mindmap, timeline, journey, GitGraph, C4, block, packet, radar, treemap, XYChart, architecture, requirement, quadrant, Sankey, and Kanban diagrams are supported. TreeView, Ishikawa, Event Modeling, and Venn rendering is experimental.
+
+For untrusted documents, Mermaid runtime configuration, HTML labels, click handlers, links, and external resources are disabled. Only a frontmatter `title` is accepted. A block is limited to 256 KiB, a document to 64 diagrams, and generated images are rendered within bounded SVG and pixel budgets. Browser-pixel-identical layout is not guaranteed.
 
 ## Building
 

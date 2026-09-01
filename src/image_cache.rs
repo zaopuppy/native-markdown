@@ -61,6 +61,10 @@ impl BudgetImageCache {
         }
     }
 
+    pub fn remove_resource(&mut self, resource: &Resource, window: &mut Window, cx: &mut App) {
+        self.remove(hash(resource), window, cx);
+    }
+
     fn record_loaded_size(
         &mut self,
         hash: u64,
