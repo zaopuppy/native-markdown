@@ -34,7 +34,7 @@ Use `Ctrl+mouse-wheel` for smooth zooming. Set `NATIVE_MARKDOWN_REMOTE_IMAGES=1`
 
 Mermaid rendering uses the pinned native `merman 0.7.0` renderer and targets Mermaid 11.15 syntax. Flowchart, sequence, class, state, ER, Gantt, pie, mindmap, timeline, journey, GitGraph, C4, block, packet, radar, treemap, XYChart, architecture, requirement, quadrant, Sankey, and Kanban diagrams are supported. TreeView, Ishikawa, Event Modeling, and Venn rendering is experimental.
 
-For untrusted documents, Mermaid runtime configuration, HTML labels, click handlers, links, and external resources are disabled. Only a frontmatter `title` is accepted. A block is limited to 256 KiB, a document to 64 diagrams, and generated images are rendered within bounded SVG and pixel budgets. Browser-pixel-identical layout is not guaranteed.
+For untrusted documents, Mermaid runtime configuration, HTML labels other than plain `<br>` line breaks, click handlers, links, and external resources are disabled. Only a frontmatter `title` is accepted. A block is limited to 256 KiB, a document to 64 diagrams, and generated images are rendered within bounded SVG and pixel budgets. Browser-pixel-identical layout is not guaranteed.
 
 ## Building
 

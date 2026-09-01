@@ -59,6 +59,18 @@ fn real_worker_rejects_configuration_then_renders_a_safe_svg() {
     assert!(!svg.to_ascii_lowercase().contains("<foreignobject"));
     assert!(!svg.to_ascii_lowercase().contains("<script"));
 
+    let (status, svg) = send_request(
+        &mut stdin,
+        &mut stdout,
+        3,
+        "flowchart LR\nA[一<br>二] --> B[三<BR/>四] --> C[五<br />六]",
+    );
+    assert_eq!(status, 0, "{svg}");
+    let lowercase_svg = svg.to_ascii_lowercase();
+    assert!(!lowercase_svg.contains("<foreignobject"));
+    assert!(!lowercase_svg.contains("<script"));
+    assert!(!lowercase_svg.contains("<br"));
+
     drop(stdin);
     assert!(child.wait().unwrap().success());
 }

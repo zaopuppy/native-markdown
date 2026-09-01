@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, Write};
 use std::ops::Range;
@@ -496,7 +497,7 @@ fn classify_diagram(source: &str) -> (String, SupportLevel) {
     (label.to_owned(), support)
 }
 
-fn validate_source(source: &str, support: SupportLevel) -> Result<(), String> {
+fn validate_source(source: &str, support: SupportLevel) -> Result<Cow<'_, str>, String> {
     if source.len() > MAX_SOURCE_BYTES {
         return Err(format!(
             "Mermaid source exceeds the {MAX_SOURCE_BYTES} byte limit"
@@ -530,26 +531,60 @@ fn validate_source(source: &str, support: SupportLevel) -> Result<(), String> {
     }) {
         return Err("Mermaid links and click actions are disabled".to_owned());
     }
-    if contains_html_markup(source) {
-        return Err("HTML labels are disabled in Mermaid diagrams".to_owned());
-    }
-    validate_frontmatter(source)
+    validate_frontmatter(source)?;
+    normalize_line_break_tags(source)
 }
 
-fn contains_html_markup(source: &str) -> bool {
-    let bytes = source.as_bytes();
-    bytes.iter().enumerate().any(|(index, byte)| {
-        if *byte != b'<' {
-            return false;
-        }
-        let tail = &bytes[index + 1..];
-        let tag_start = match tail.first() {
-            Some(b'/') => tail.get(1).copied(),
-            Some(b'!') => return tail.contains(&b'>'),
-            first => first.copied(),
+fn normalize_line_break_tags(source: &str) -> Result<Cow<'_, str>, String> {
+    let mut search_from = 0;
+    let mut copied_through = 0;
+    let mut normalized: Option<String> = None;
+
+    while let Some(relative_start) = source[search_from..].find('<') {
+        let start = search_from + relative_start;
+        let tail = &source[start + 1..];
+        let bytes = tail.as_bytes();
+        let looks_like_html = match bytes.first().copied() {
+            Some(first) if first.is_ascii_alphabetic() => true,
+            Some(b'/') => bytes.get(1).is_some_and(|next| next.is_ascii_alphabetic()),
+            Some(b'!') => true,
+            _ => false,
         };
-        tag_start.is_some_and(|next| next.is_ascii_alphabetic()) && tail.contains(&b'>')
-    })
+        if !looks_like_html {
+            search_from = start + 1;
+            continue;
+        }
+
+        let Some(relative_end) = tail.find('>') else {
+            return Err("HTML labels are disabled in Mermaid diagrams".to_owned());
+        };
+        let end = start + 1 + relative_end;
+        let tag_body = &source[start + 1..end];
+        let is_plain_break = tag_body.get(..2).is_some_and(|name| {
+            name.eq_ignore_ascii_case("br") && {
+                let remainder = tag_body[2..].trim();
+                remainder.is_empty() || remainder == "/"
+            }
+        });
+        if !is_plain_break {
+            return Err(
+                "HTML labels are disabled; only plain <br> line breaks are allowed".to_owned(),
+            );
+        }
+
+        let output = normalized.get_or_insert_with(|| String::with_capacity(source.len()));
+        output.push_str(&source[copied_through..start]);
+        output.push_str("<br/>");
+        copied_through = end + 1;
+        search_from = end + 1;
+    }
+
+    if let Some(mut normalized) = normalized {
+        normalized.push_str(&source[copied_through..]);
+        Ok(Cow::Owned(normalized))
+    } else {
+        Ok(Cow::Borrowed(source))
+    }
 }
 
 fn validate_frontmatter(source: &str) -> Result<(), String> {
@@ -1009,9 +1044,9 @@ fn run_worker() -> Result<(), String> {
 
 fn render_one(renderer: &HeadlessRenderer, source: &str) -> Result<String, String> {
     let (_, support) = classify_diagram(source);
-    validate_source(source, support)?;
+    let source = validate_source(source, support)?;
     let svg = renderer
-        .render_svg_sync(source)
+        .render_svg_sync(&source)
         .map_err(|error| clean_error(&error.to_string()))?
         .ok_or_else(|| "No Mermaid diagram was detected".to_owned())?;
     validate_svg(&svg)?;
@@ -1095,6 +1130,28 @@ mod tests {
         )
         .is_err());
         assert!(validate_source("classDiagram\nBase <|-- Child", SupportLevel::Supported).is_ok());
+    }
+
+    #[test]
+    fn normalizes_plain_break_tags_without_allowing_html_attributes() {
+        let source = "flowchart LR\nA[one<br>two] --> B[three<BR/>four] --> C[five<br />six]";
+        let normalized = validate_source(source, SupportLevel::Supported).unwrap();
+        assert_eq!(
+            normalized,
+            "flowchart LR\nA[one<br/>two] --> B[three<br/>four] --> C[five<br/>six]"
+        );
+
+        for source in [
+            "flowchart LR\nA[<b>bold</b>]",
+            "flowchart LR\nA[one<br class='wide'>two]",
+            "flowchart LR\nA[one<br onclick='run()'>two]",
+            "flowchart LR\nA[one</br>two]",
+        ] {
+            assert!(
+                validate_source(source, SupportLevel::Supported).is_err(),
+                "{source}"
+            );
+        }
     }
 
     #[test]
