@@ -53,6 +53,10 @@ fn state_button(button: Button, selected: bool) -> Button {
         })
 }
 
+fn outline_indent(level: u8) -> f32 {
+    8.0 + level.saturating_sub(1) as f32 * 14.0
+}
+
 actions!(
     native_markdown,
     [
@@ -1424,6 +1428,10 @@ impl NativeMarkdownApp {
                 div()
                     .h_flex()
                     .gap_1()
+                    .mb_2()
+                    .pb_2()
+                    .border_b_1()
+                    .border_color(rgb(0xd3c8b5))
                     .child(
                         Button::new("tree-up")
                             .label("↑")
@@ -1725,8 +1733,13 @@ impl NativeMarkdownApp {
             .bg(rgb(0xebe3d4))
             .child(
                 div()
+                    .debug_selector(|| "outline-mode-toolbar".into())
                     .h_flex()
                     .gap_1()
+                    .mb_2()
+                    .pb_2()
+                    .border_b_1()
+                    .border_color(rgb(0xd3c8b5))
                     .child(
                         state_button(
                             Button::new("outline-jump-mode").label("Jump").small(),
@@ -1759,34 +1772,41 @@ impl NativeMarkdownApp {
                     ),
             )
             .child(
-                state_button(
-                    Button::new("show-full-document")
-                        .label("Full document")
-                        .small(),
-                    self.focused_section.is_none() && self.selected_heading.is_none(),
-                )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.focused_section = None;
-                    this.selected_heading = None;
-                    this.view_mode = ViewMode::Preview;
-                    cx.notify();
-                })),
+                div()
+                    .debug_selector(|| "outline-full-document".into())
+                    .child(
+                        state_button(
+                            Button::new("show-full-document")
+                                .label("Full document")
+                                .small()
+                                .w_full()
+                                .justify_start(),
+                            self.focused_section.is_none() && self.selected_heading.is_none(),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.focused_section = None;
+                            this.selected_heading = None;
+                            this.view_mode = ViewMode::Preview;
+                            cx.notify();
+                        })),
+                    ),
             );
 
         for (heading_index, heading) in self.outline.iter().enumerate() {
             let section_index = sections
                 .iter()
                 .position(|section| section.heading_index == Some(heading_index));
-            let label = format!(
-                "{}{}",
-                "  ".repeat(heading.level.saturating_sub(1) as usize),
-                heading.title
-            );
+            let marker = if heading.level == 1 { "◆" } else { "•" };
+            let label = format!("{marker} {}", heading.title);
             panel = panel.child(
                 Button::new(("outline-heading", heading_index))
                     .label(label)
                     .small()
                     .ghost()
+                    .w_full()
+                    .justify_start()
+                    .pl(px(outline_indent(heading.level)))
+                    .pr_2()
                     .selected(self.selected_heading == Some(heading_index))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.selected_heading = Some(heading_index);
@@ -2448,8 +2468,16 @@ mod tests {
         let tree = cx.debug_bounds("file-tree-panel").unwrap();
         let preview = cx.debug_bounds("preview-panel").unwrap();
         let outline = cx.debug_bounds("outline-panel").unwrap();
+        let outline_toolbar = cx.debug_bounds("outline-mode-toolbar").unwrap();
+        let full_document = cx.debug_bounds("outline-full-document").unwrap();
         assert!(tree.origin.x + tree.size.width <= preview.origin.x);
         assert!(outline.origin.x >= preview.origin.x + preview.size.width);
+        let outline_control_gap =
+            full_document.origin.y - (outline_toolbar.origin.y + outline_toolbar.size.height);
+        assert!(
+            outline_control_gap >= px(8.0),
+            "outline mode controls need breathing room before the document tree: {outline_control_gap:?}"
+        );
 
         app.read_with(cx, |app, _| {
             assert_eq!(
