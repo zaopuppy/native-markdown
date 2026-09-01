@@ -45,7 +45,10 @@ $secondaryDocumentPath = if ($SecondaryDocument) {
 } else {
     $null
 }
-$profileArguments = if ($Profile -eq 'release') { @('--release') } else { @() }
+$profileArguments = @()
+if ($Profile -eq 'release') {
+    $profileArguments += '--release'
+}
 $binary = Join-Path $repoRoot "target\$Profile\native-markdown.exe"
 $scenarios = if ($Scenario -eq 'all') {
     @('idle', 'view-modes', 'zoom', 'zoom-source', 'zoom-split', 'reopen', 'scroll')
