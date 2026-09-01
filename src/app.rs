@@ -78,6 +78,12 @@ impl ViewMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OutlineMode {
+    Jump,
+    Focus,
+}
+
 struct Notice {
     text: String,
     is_error: bool,
@@ -106,7 +112,10 @@ pub struct NativeMarkdownApp {
     view_mode: ViewMode,
     outline_open: bool,
     search_open: bool,
-    preview_section: Option<usize>,
+    focused_section: Option<usize>,
+    selected_heading: Option<usize>,
+    outline_mode: OutlineMode,
+    outline_jump_request: u64,
     zoom: ZoomLevel,
     last_path: Option<PathBuf>,
     recovery_available: bool,
@@ -276,7 +285,10 @@ impl NativeMarkdownApp {
             view_mode: ViewMode::Preview,
             outline_open: false,
             search_open: false,
-            preview_section: None,
+            focused_section: None,
+            selected_heading: None,
+            outline_mode: OutlineMode::Focus,
+            outline_jump_request: 0,
             zoom: ZoomLevel::default(),
             last_path,
             recovery_available: Document::recovery_exists(),
@@ -306,9 +318,12 @@ impl NativeMarkdownApp {
         self.word_count = markdown::word_count(&self.document.content);
         self.reading_minutes = markdown::reading_minutes(self.word_count);
         self.refresh_search();
-        self.preview_section = self.preview_section.filter(|section| {
+        self.focused_section = self.focused_section.filter(|section| {
             *section < markdown::sections(&self.document.content, &self.outline).len()
         });
+        self.selected_heading = self
+            .selected_heading
+            .filter(|heading| *heading < self.outline.len());
     }
 
     fn refresh_mermaid(&mut self, timeout: Duration, window: &mut Window, cx: &mut Context<Self>) {
@@ -411,7 +426,8 @@ impl NativeMarkdownApp {
         self.last_path.clone_from(&self.document.path);
         self.image_root
             .set_document_path(self.document.path.as_deref());
-        self.preview_section = None;
+        self.focused_section = None;
+        self.selected_heading = None;
         self.search_open = false;
         self.outline_open = false;
         self.view_mode = ViewMode::Preview;
@@ -714,12 +730,16 @@ impl NativeMarkdownApp {
         if let Some(offset) = hit.source_offset {
             let position = byte_offset_position(&self.document.content, offset);
             self.view_mode = ViewMode::Split;
-            self.preview_section = None;
+            self.focused_section = None;
+            self.selected_heading = None;
             self.editor.update(cx, |editor, cx| {
                 editor.set_cursor_position(position, window, cx)
             });
         } else {
-            self.preview_section = Some(hit.section_index);
+            self.focused_section = Some(hit.section_index);
+            self.selected_heading = markdown::sections(&self.document.content, &self.outline)
+                .get(hit.section_index)
+                .and_then(|section| section.heading_index);
             self.view_mode = ViewMode::Preview;
         }
         cx.notify();
@@ -991,12 +1011,48 @@ impl NativeMarkdownApp {
             .border_color(rgb(0xd3c8b5))
             .bg(rgb(0xebe3d4))
             .child(
+                div()
+                    .h_flex()
+                    .gap_1()
+                    .child(
+                        Button::new("outline-jump-mode")
+                            .label("Jump")
+                            .small()
+                            .selected(self.outline_mode == OutlineMode::Jump)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.outline_mode = OutlineMode::Jump;
+                                this.focused_section = None;
+                                if this.selected_heading.is_some() {
+                                    this.outline_jump_request =
+                                        this.outline_jump_request.wrapping_add(1);
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("outline-focus-mode")
+                            .label("Focus")
+                            .small()
+                            .selected(self.outline_mode == OutlineMode::Focus)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.outline_mode = OutlineMode::Focus;
+                                this.focused_section = this.selected_heading.and_then(|heading| {
+                                    markdown::sections(&this.document.content, &this.outline)
+                                        .iter()
+                                        .position(|section| section.heading_index == Some(heading))
+                                });
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
                 Button::new("show-full-document")
                     .label("Full document")
                     .small()
-                    .selected(self.preview_section.is_none())
+                    .selected(self.focused_section.is_none() && self.selected_heading.is_none())
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.preview_section = None;
+                        this.focused_section = None;
+                        this.selected_heading = None;
                         this.view_mode = ViewMode::Preview;
                         cx.notify();
                     })),
@@ -1016,9 +1072,17 @@ impl NativeMarkdownApp {
                     .label(label)
                     .small()
                     .ghost()
-                    .selected(section_index == self.preview_section)
+                    .selected(self.selected_heading == Some(heading_index))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.preview_section = section_index;
+                        this.selected_heading = Some(heading_index);
+                        match this.outline_mode {
+                            OutlineMode::Jump => {
+                                this.focused_section = None;
+                                this.outline_jump_request =
+                                    this.outline_jump_request.wrapping_add(1);
+                            }
+                            OutlineMode::Focus => this.focused_section = section_index,
+                        }
                         this.view_mode = ViewMode::Preview;
                         cx.notify();
                     })),
@@ -1029,7 +1093,7 @@ impl NativeMarkdownApp {
 
     fn preview_source(&self, viewport_width: u32) -> SharedString {
         let range = self
-            .preview_section
+            .focused_section
             .and_then(|section_index| {
                 markdown::sections(&self.document.content, &self.outline)
                     .get(section_index)
@@ -1058,6 +1122,36 @@ impl NativeMarkdownApp {
             .clamp(1.0, 1_280.0) as u32;
         self.image_root.set_viewport_width(viewport_width);
         let app = cx.entity().downgrade();
+        let mut preview = TextView::markdown(
+            "native-markdown-preview",
+            self.preview_source(viewport_width),
+            window,
+            cx,
+        )
+        .selectable(true)
+        .scrollable(true);
+        if self.outline_mode == OutlineMode::Jump {
+            if let Some(heading_index) = self.selected_heading {
+                preview = preview.scroll_to_heading_once(heading_index, self.outline_jump_request);
+            }
+        }
+        let preview = preview.code_block_actions(move |code_block, _, _| {
+            let Some(index) =
+                mermaid::action_block_index(code_block.lang().as_deref().map(|value| &**value))
+            else {
+                return div().into_any_element();
+            };
+            let app = app.clone();
+            Button::new(("mermaid-view-source", index))
+                .label("View source")
+                .small()
+                .on_click(move |_, window, cx| {
+                    app.update(cx, |app, cx| app.show_mermaid_source(index, window, cx))
+                        .ok();
+                })
+                .into_any_element()
+        });
+
         div()
             .debug_selector(|| "preview-panel".into())
             .flex_1()
@@ -1067,36 +1161,9 @@ impl NativeMarkdownApp {
             .overflow_hidden()
             .bg(rgb(0xfaf7f0))
             .child(
-                image_cache(self.image_cache.clone()).size_full().child(
-                    div().size_full().px_5().child(
-                        TextView::markdown(
-                            "native-markdown-preview",
-                            self.preview_source(viewport_width),
-                            window,
-                            cx,
-                        )
-                        .selectable(true)
-                        .scrollable(true)
-                        .code_block_actions(move |code_block, _, _| {
-                            let Some(index) = mermaid::action_block_index(
-                                code_block.lang().as_deref().map(|value| &**value),
-                            ) else {
-                                return div().into_any_element();
-                            };
-                            let app = app.clone();
-                            Button::new(("mermaid-view-source", index))
-                                .label("View source")
-                                .small()
-                                .on_click(move |_, window, cx| {
-                                    app.update(cx, |app, cx| {
-                                        app.show_mermaid_source(index, window, cx)
-                                    })
-                                    .ok();
-                                })
-                                .into_any_element()
-                        }),
-                    ),
-                ),
+                image_cache(self.image_cache.clone())
+                    .size_full()
+                    .child(div().size_full().px_5().child(preview)),
             )
     }
 
@@ -1106,7 +1173,8 @@ impl NativeMarkdownApp {
         };
         let position = byte_offset_position(&self.document.content, range.start);
         self.view_mode = ViewMode::Split;
-        self.preview_section = None;
+        self.focused_section = None;
+        self.selected_heading = None;
         self.editor.update(cx, |editor, cx| {
             editor.set_cursor_position(position, window, cx)
         });
