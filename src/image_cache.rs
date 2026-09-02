@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use futures::FutureExt as _;
@@ -8,6 +8,7 @@ use gpui::{
 };
 use image::{imageops::FilterType, Frame, ImageBuffer, Rgba};
 
+use crate::image_loader::{VIEWER_MAX_IMAGE_PIXELS, VIEWER_MAX_IMAGE_WIDTH, VIEWER_URI_PREFIX};
 use crate::mermaid::{MAX_RASTER_WIDTH, URI_PREFIX};
 
 pub const SOFT_BUDGET_BYTES: usize = 100 * 1024 * 1024;
@@ -31,6 +32,7 @@ struct CacheEntry {
 /// counts every decoded frame twice: once for the CPU buffer and once for its texture.
 pub struct BudgetImageCache {
     entries: HashMap<u64, CacheEntry>,
+    protected: HashSet<u64>,
     estimated_bytes: usize,
     access_clock: u64,
 }
@@ -39,6 +41,7 @@ impl BudgetImageCache {
     pub fn new(cx: &mut App) -> Entity<Self> {
         let cache = cx.new(|_| Self {
             entries: HashMap::new(),
+            protected: HashSet::new(),
             estimated_bytes: 0,
             access_clock: 0,
         });
@@ -65,6 +68,17 @@ impl BudgetImageCache {
         for hash in hashes {
             self.remove(hash, window, cx);
         }
+        self.protected.clear();
+    }
+
+    pub fn protect_resource(&mut self, resource: &Resource) {
+        self.protected.insert(hash(resource));
+    }
+
+    pub fn release_resource(&mut self, resource: &Resource, window: &mut Window, cx: &mut App) {
+        let hash = hash(resource);
+        self.protected.remove(&hash);
+        self.remove(hash, window, cx);
     }
 
     fn record_loaded_size(
@@ -90,6 +104,7 @@ impl BudgetImageCache {
     }
 
     fn remove(&mut self, hash: u64, window: &mut Window, cx: &mut App) {
+        self.protected.remove(&hash);
         let Some(mut entry) = self.entries.remove(&hash) else {
             return;
         };
@@ -118,6 +133,7 @@ impl BudgetImageCache {
                     (*hash, entry.last_access, entry.estimated_bytes.unwrap_or(0))
                 }),
                 protected_hash,
+                &self.protected,
             ) else {
                 break;
             };
@@ -129,10 +145,13 @@ impl BudgetImageCache {
 fn select_lru_candidate(
     entries: impl IntoIterator<Item = (u64, u64, usize)>,
     protected_hash: u64,
+    protected: &HashSet<u64>,
 ) -> Option<u64> {
     entries
         .into_iter()
-        .filter(|(hash, _, bytes)| *hash != protected_hash && *bytes > 0)
+        .filter(|(hash, _, bytes)| {
+            *hash != protected_hash && !protected.contains(hash) && *bytes > 0
+        })
         .min_by_key(|(_, last_access, _)| *last_access)
         .map(|(hash, _, _)| hash)
 }
@@ -141,6 +160,7 @@ fn select_lru_candidate(
 struct SizedImageResource {
     resource: Resource,
     max_width: u32,
+    max_pixels: u64,
 }
 
 enum SizedImageAssetLoader {}
@@ -158,7 +178,7 @@ impl Asset for SizedImageAssetLoader {
         let (image, _) = cx.fetch_asset::<ImgResourceLoader>(&source.resource);
         async move {
             let image = image.await?;
-            downsample_to_width(image, source.max_width)
+            downsample_to_limits(image, source.max_width, source.max_pixels)
         }
     }
 }
@@ -170,24 +190,55 @@ fn viewport_device_width(window: &Window) -> u32 {
         .clamp(1.0, u32::MAX as f32) as u32
 }
 
+#[cfg(test)]
 fn scaled_dimensions(width: u32, height: u32, max_width: u32) -> Option<(u32, u32)> {
-    if width <= max_width || width == 0 || height == 0 {
-        return None;
-    }
-
-    let target_height = ((height as u64 * max_width as u64) / width as u64)
-        .max(1)
-        .min(u32::MAX as u64) as u32;
-    Some((max_width, target_height))
+    scaled_dimensions_with_limit(width, height, max_width, u64::MAX)
 }
 
+fn scaled_dimensions_with_limit(
+    width: u32,
+    height: u32,
+    max_width: u32,
+    max_pixels: u64,
+) -> Option<(u32, u32)> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let pixels = u64::from(width).saturating_mul(u64::from(height));
+    if width <= max_width && pixels <= max_pixels {
+        return None;
+    }
+    let width_scale = max_width as f64 / width as f64;
+    let pixel_scale = (max_pixels as f64 / pixels.max(1) as f64).sqrt();
+    let scale = width_scale.min(pixel_scale).min(1.0);
+    Some((
+        (width as f64 * scale).floor().max(1.0) as u32,
+        (height as f64 * scale).floor().max(1.0) as u32,
+    ))
+}
+
+#[cfg(test)]
 fn downsample_to_width(
     image: Arc<RenderImage>,
     max_width: u32,
 ) -> Result<Arc<RenderImage>, ImageCacheError> {
+    downsample_to_limits(image, max_width, u64::MAX)
+}
+
+fn downsample_to_limits(
+    image: Arc<RenderImage>,
+    max_width: u32,
+    max_pixels: u64,
+) -> Result<Arc<RenderImage>, ImageCacheError> {
     let needs_resize = (0..image.frame_count()).any(|frame_index| {
         let size = image.size(frame_index);
-        u32::try_from(i32::from(size.width)).is_ok_and(|width| width > max_width)
+        let Ok(width) = u32::try_from(i32::from(size.width)) else {
+            return true;
+        };
+        let Ok(height) = u32::try_from(i32::from(size.height)) else {
+            return true;
+        };
+        width > max_width || u64::from(width).saturating_mul(u64::from(height)) > max_pixels
     });
     if !needs_resize {
         return Ok(image);
@@ -207,7 +258,7 @@ fn downsample_to_width(
             .ok_or_else(|| ImageCacheError::Asset("image frame has no pixel data".into()))?;
         let buffer = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(width, height, bytes.to_vec())
             .ok_or_else(|| ImageCacheError::Asset("image frame has an invalid size".into()))?;
-        let buffer = match scaled_dimensions(width, height, max_width) {
+        let buffer = match scaled_dimensions_with_limit(width, height, max_width, max_pixels) {
             Some((target_width, target_height)) => {
                 image::imageops::resize(&buffer, target_width, target_height, FilterType::Lanczos3)
             }
@@ -238,15 +289,21 @@ impl ImageCache for BudgetImageCache {
             return Some(result);
         }
 
-        let max_width = match resource {
-            Resource::Uri(uri) if uri.as_ref().starts_with(URI_PREFIX) => MAX_RASTER_WIDTH,
-            _ => viewport_device_width(window),
+        let (max_width, max_pixels) = match resource {
+            Resource::Uri(uri) if uri.as_ref().starts_with(VIEWER_URI_PREFIX) => {
+                (VIEWER_MAX_IMAGE_WIDTH, VIEWER_MAX_IMAGE_PIXELS)
+            }
+            Resource::Uri(uri) if uri.as_ref().starts_with(URI_PREFIX) => {
+                (MAX_RASTER_WIDTH, u64::MAX)
+            }
+            _ => (viewport_device_width(window), u64::MAX),
         };
 
         let future = AssetLogger::<SizedImageAssetLoader>::load(
             SizedImageResource {
                 resource: resource.clone(),
                 max_width,
+                max_pixels,
             },
             cx,
         );
@@ -285,14 +342,25 @@ mod tests {
     fn lru_eviction_prefers_the_oldest_loaded_unprotected_candidate() {
         let entries = [(10, 1, 32), (20, 2, 48), (30, 0, 0), (40, 4, 64)];
 
-        assert_eq!(select_lru_candidate(entries, 20), Some(10));
-        assert_eq!(select_lru_candidate(entries, 10), Some(20));
+        assert_eq!(select_lru_candidate(entries, 20, &HashSet::new()), Some(10));
+        assert_eq!(select_lru_candidate(entries, 10, &HashSet::new()), Some(20));
+        assert_eq!(
+            select_lru_candidate(entries, 30, &HashSet::from([10])),
+            Some(20)
+        );
     }
 
     #[test]
     fn large_images_are_scaled_to_the_display_width() {
         assert_eq!(scaled_dimensions(3000, 1800, 1200), Some((1200, 720)));
         assert_eq!(scaled_dimensions(800, 600, 1200), None);
+    }
+
+    #[test]
+    fn viewer_dimensions_respect_pixel_budget() {
+        let dimensions = scaled_dimensions_with_limit(4_000, 3_000, 8_192, 1_000_000).unwrap();
+        assert!(u64::from(dimensions.0) * u64::from(dimensions.1) <= 1_000_000);
+        assert!((dimensions.0 as f32 / dimensions.1 as f32 - 4.0 / 3.0).abs() < 0.01);
     }
 
     #[test]

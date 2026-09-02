@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use anyhow::{bail, Context as _};
-use futures::future::BoxFuture;
+use futures::{future::BoxFuture, AsyncReadExt as _};
 use gpui_http_client::http::HeaderValue;
 use gpui_http_client::{AsyncBody, HttpClient, Request, Response, StatusCode, Url};
 use image::{imageops::FilterType, ImageFormat};
@@ -16,7 +16,23 @@ use crate::mermaid::{MAX_RASTER_PIXELS, MAX_RASTER_WIDTH, URI_PREFIX};
 // physical width also keeps ultra-wide source figures from dominating the process heap.
 const MAX_PREPARED_IMAGE_WIDTH: u32 = MAX_RASTER_WIDTH;
 const MAX_MERMAID_SVG_STORE_BYTES: usize = 16 * 1024 * 1024;
-type PreparedImageCache = Arc<Mutex<HashMap<(PathBuf, u32), Arc<[u8]>>>>;
+pub const VIEWER_MAX_IMAGE_WIDTH: u32 = 8_192;
+pub const VIEWER_MAX_IMAGE_PIXELS: u64 = 8 * 1024 * 1024;
+pub const VIEWER_URI_PREFIX: &str = "native-markdown-viewer://";
+type PreparedImageCache = Arc<Mutex<HashMap<(PathBuf, u32, u64), Arc<[u8]>>>>;
+
+#[derive(Clone, Copy)]
+struct ImagePreparation {
+    max_width: u32,
+    max_pixels: u64,
+    retain: bool,
+}
+
+#[derive(Clone)]
+struct ViewerImageRequest {
+    source: String,
+    generation: u64,
+}
 
 #[derive(Default)]
 struct MermaidSvgStore {
@@ -35,6 +51,8 @@ pub struct DocumentImageRoot {
     preparation_gate: Arc<Mutex<()>>,
     prepared_images: PreparedImageCache,
     mermaid_svgs: Arc<RwLock<MermaidSvgStore>>,
+    viewer_requests: Arc<RwLock<HashMap<String, ViewerImageRequest>>>,
+    next_viewer_request: Arc<AtomicU64>,
 }
 
 impl Default for DocumentImageRoot {
@@ -49,6 +67,8 @@ impl Default for DocumentImageRoot {
             preparation_gate: Arc::default(),
             prepared_images: Arc::default(),
             mermaid_svgs: Arc::default(),
+            viewer_requests: Arc::default(),
+            next_viewer_request: Arc::new(AtomicU64::new(1)),
         }
     }
 }
@@ -68,6 +88,10 @@ impl DocumentImageRoot {
         self.prepared_images
             .lock()
             .expect("prepared image cache lock poisoned")
+            .clear();
+        self.viewer_requests
+            .write()
+            .expect("viewer image request lock poisoned")
             .clear();
         let mut mermaid = self
             .mermaid_svgs
@@ -92,6 +116,39 @@ impl DocumentImageRoot {
     pub fn set_viewport_width(&self, width: u32) {
         self.viewport_width
             .store(width.clamp(1, MAX_PREPARED_IMAGE_WIDTH), Ordering::Relaxed);
+    }
+
+    pub fn viewer_uri(&self, source: &str) -> String {
+        let generation = self.generation.load(Ordering::Relaxed);
+        let request = self.next_viewer_request.fetch_add(1, Ordering::Relaxed);
+        let uri = format!("{VIEWER_URI_PREFIX}{generation}/{request}");
+        self.viewer_requests
+            .write()
+            .expect("viewer image request lock poisoned")
+            .insert(
+                uri.clone(),
+                ViewerImageRequest {
+                    source: source.to_owned(),
+                    generation,
+                },
+            );
+        uri
+    }
+
+    pub fn release_viewer_uri(&self, uri: &str) {
+        self.viewer_requests
+            .write()
+            .expect("viewer image request lock poisoned")
+            .remove(uri);
+    }
+
+    fn viewer_request_is_live(&self, uri: &str, generation: u64) -> bool {
+        self.generation.load(Ordering::Relaxed) == generation
+            && self
+                .viewer_requests
+                .read()
+                .expect("viewer image request lock poisoned")
+                .contains_key(uri)
     }
 
     pub fn insert_mermaid_svg(&self, key: &str, svg: Arc<[u8]>) -> Result<(), String> {
@@ -178,6 +235,15 @@ impl HttpClient for DocumentImageClient {
         body: AsyncBody,
         follow_redirects: bool,
     ) -> BoxFuture<'static, anyhow::Result<Response<AsyncBody>>> {
+        if uri.starts_with(VIEWER_URI_PREFIX) {
+            return viewer_image_response(
+                self.document_root.clone(),
+                self.remote_images,
+                self.fallback.clone(),
+                uri.to_owned(),
+                follow_redirects,
+            );
+        }
         if uri.starts_with(URI_PREFIX) {
             return mermaid_image_response(self.document_root.clone(), uri.to_owned());
         }
@@ -200,7 +266,11 @@ impl HttpClient for DocumentImageClient {
                     .insert(uri.to_owned());
                 local_file_response(
                     path,
-                    self.document_root.viewport_width.load(Ordering::Relaxed),
+                    ImagePreparation {
+                        max_width: self.document_root.viewport_width.load(Ordering::Relaxed),
+                        max_pixels: u64::MAX,
+                        retain: true,
+                    },
                     request_generation,
                     self.document_root.generation.clone(),
                     self.document_root.preparation_gate.clone(),
@@ -218,9 +288,95 @@ impl HttpClient for DocumentImageClient {
     }
 }
 
+fn viewer_image_response(
+    root: DocumentImageRoot,
+    remote_images: bool,
+    fallback: Arc<dyn HttpClient>,
+    request_uri: String,
+    follow_redirects: bool,
+) -> BoxFuture<'static, anyhow::Result<Response<AsyncBody>>> {
+    Box::pin(async move {
+        let request = root
+            .viewer_requests
+            .read()
+            .expect("viewer image request lock poisoned")
+            .get(&request_uri)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("image viewer request is no longer available"))?;
+        if root.generation.load(Ordering::Relaxed) != request.generation {
+            bail!("image viewer request belongs to an older document");
+        }
+        if request.source.starts_with(URI_PREFIX) {
+            let response = mermaid_image_response_with_limits(
+                root.clone(),
+                request.source,
+                VIEWER_MAX_IMAGE_WIDTH,
+                VIEWER_MAX_IMAGE_PIXELS,
+            )
+            .await?;
+            if !root.viewer_request_is_live(&request_uri, request.generation) {
+                bail!("image viewer request was cancelled");
+            }
+            return Ok(response);
+        }
+
+        let local = {
+            let _document_guard = root
+                .document_gate
+                .lock()
+                .expect("document image state lock poisoned");
+            resolve_local_reference(&root, &request.source)?
+        };
+        if let Some(path) = local {
+            let response = local_file_response(
+                path,
+                ImagePreparation {
+                    max_width: VIEWER_MAX_IMAGE_WIDTH,
+                    max_pixels: VIEWER_MAX_IMAGE_PIXELS,
+                    retain: false,
+                },
+                request.generation,
+                root.generation.clone(),
+                root.preparation_gate.clone(),
+                root.prepared_images.clone(),
+                root.loads.clone(),
+            )
+            .await?;
+            if !root.viewer_request_is_live(&request_uri, request.generation) {
+                bail!("image viewer request was cancelled");
+            }
+            return Ok(response);
+        }
+        if !remote_images {
+            bail!("remote image is disabled");
+        }
+
+        let mut response = fallback
+            .get(&request.source, AsyncBody::empty(), follow_redirects)
+            .await?;
+        let status = response.status();
+        let mut bytes = Vec::new();
+        response.body_mut().read_to_end(&mut bytes).await?;
+        let bytes = prepare_image(bytes, VIEWER_MAX_IMAGE_WIDTH, VIEWER_MAX_IMAGE_PIXELS);
+        if !root.viewer_request_is_live(&request_uri, request.generation) {
+            bail!("image viewer request was cancelled");
+        }
+        Ok(Response::builder().status(status).body(bytes.into())?)
+    })
+}
+
 fn mermaid_image_response(
     root: DocumentImageRoot,
     uri: String,
+) -> BoxFuture<'static, anyhow::Result<Response<AsyncBody>>> {
+    mermaid_image_response_with_limits(root, uri, MAX_RASTER_WIDTH, MAX_RASTER_PIXELS)
+}
+
+fn mermaid_image_response_with_limits(
+    root: DocumentImageRoot,
+    uri: String,
+    max_width: u32,
+    max_pixels: u64,
 ) -> BoxFuture<'static, anyhow::Result<Response<AsyncBody>>> {
     Box::pin(async move {
         let key = parse_mermaid_uri(&uri)?;
@@ -232,7 +388,7 @@ fn mermaid_image_response(
             .get(key)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Mermaid image is no longer available"))?;
-        let png = rasterize_mermaid_svg(&svg, MAX_RASTER_WIDTH)?;
+        let png = rasterize_mermaid_svg(&svg, max_width, max_pixels)?;
         root.requested_resources
             .write()
             .expect("requested image resource lock poisoned")
@@ -257,7 +413,11 @@ fn parse_mermaid_uri(uri: &str) -> anyhow::Result<&str> {
     Ok(key)
 }
 
-fn rasterize_mermaid_svg(svg: &[u8], target_width: u32) -> anyhow::Result<Vec<u8>> {
+fn rasterize_mermaid_svg(
+    svg: &[u8],
+    target_width: u32,
+    max_pixels: u64,
+) -> anyhow::Result<Vec<u8>> {
     static FONT_DATABASE: OnceLock<Arc<resvg::usvg::fontdb::Database>> = OnceLock::new();
     let fontdb = FONT_DATABASE.get_or_init(|| {
         let mut database = resvg::usvg::fontdb::Database::new();
@@ -274,16 +434,28 @@ fn rasterize_mermaid_svg(svg: &[u8], target_width: u32) -> anyhow::Result<Vec<u8
     let source_size = tree.size();
     let source_width = source_size.width().max(1.0);
     let source_height = source_size.height().max(1.0);
-    let desired_width = target_width.clamp(1, MAX_RASTER_WIDTH) as f32;
+    let desired_width = target_width.max(1) as f32;
     let mut scale = desired_width / source_width;
     let desired_pixels = source_width as f64 * source_height as f64 * scale as f64 * scale as f64;
-    if desired_pixels > MAX_RASTER_PIXELS as f64 {
-        scale *= (MAX_RASTER_PIXELS as f64 / desired_pixels).sqrt() as f32;
+    let pixel_limited = desired_pixels > max_pixels as f64;
+    if pixel_limited {
+        scale *= (max_pixels as f64 / desired_pixels).sqrt() as f32;
     }
-    let width = (source_width * scale).ceil().clamp(1.0, u32::MAX as f32) as u32;
-    let height = (source_height * scale).ceil().clamp(1.0, u32::MAX as f32) as u32;
-    if u64::from(width).saturating_mul(u64::from(height)) > MAX_RASTER_PIXELS {
-        bail!("Mermaid raster exceeds the {MAX_RASTER_PIXELS} pixel limit");
+    let round_dimension = |dimension: f32| {
+        if pixel_limited {
+            dimension.floor()
+        } else {
+            dimension.ceil()
+        }
+        .clamp(1.0, u32::MAX as f32) as u32
+    };
+    let width = round_dimension(source_width * scale);
+    let height = round_dimension(source_height * scale);
+    if pixel_limited {
+        scale = (width as f32 / source_width).min(height as f32 / source_height);
+    }
+    if u64::from(width).saturating_mul(u64::from(height)) > max_pixels {
+        bail!("Mermaid raster exceeds the {max_pixels} pixel limit");
     }
     let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)
         .ok_or_else(|| anyhow::anyhow!("could not allocate Mermaid raster"))?;
@@ -299,7 +471,7 @@ fn rasterize_mermaid_svg(svg: &[u8], target_width: u32) -> anyhow::Result<Vec<u8
 
 fn local_file_response(
     path: PathBuf,
-    max_width: u32,
+    preparation: ImagePreparation,
     request_generation: u64,
     generation: Arc<AtomicU64>,
     preparation_gate: Arc<Mutex<()>>,
@@ -307,31 +479,44 @@ fn local_file_response(
     loads: Arc<AtomicUsize>,
 ) -> BoxFuture<'static, anyhow::Result<Response<AsyncBody>>> {
     Box::pin(async move {
+        let ImagePreparation {
+            max_width,
+            max_pixels,
+            retain,
+        } = preparation;
         let bytes = smol::fs::read(&path)
             .await
             .with_context(|| format!("failed to read local image {}", path.display()))?;
-        let cache_key = (path.clone(), max_width);
-        let cached = prepared_images
-            .lock()
-            .expect("prepared image cache lock poisoned")
-            .get(&cache_key)
-            .cloned();
+        let cache_key = (path.clone(), max_width, max_pixels);
+        let cached = if retain {
+            prepared_images
+                .lock()
+                .expect("prepared image cache lock poisoned")
+                .get(&cache_key)
+                .cloned()
+        } else {
+            None
+        };
         let bytes = if let Some(bytes) = cached {
             bytes
         } else {
             let _preparation_guard = preparation_gate
                 .lock()
                 .expect("image preparation gate lock poisoned");
-            let cached_after_wait = prepared_images
-                .lock()
-                .expect("prepared image cache lock poisoned")
-                .get(&cache_key)
-                .cloned();
+            let cached_after_wait = if retain {
+                prepared_images
+                    .lock()
+                    .expect("prepared image cache lock poisoned")
+                    .get(&cache_key)
+                    .cloned()
+            } else {
+                None
+            };
             if let Some(bytes) = cached_after_wait {
                 bytes
             } else {
-                let bytes: Arc<[u8]> = prepare_image_for_viewport(bytes, max_width).into();
-                if generation.load(Ordering::Relaxed) == request_generation {
+                let bytes: Arc<[u8]> = prepare_image(bytes, max_width, max_pixels).into();
+                if retain && generation.load(Ordering::Relaxed) == request_generation {
                     prepared_images
                         .lock()
                         .expect("prepared image cache lock poisoned")
@@ -351,7 +536,12 @@ fn local_file_response(
 
 /// Downsize oversized local rasters before GPUI's global loader creates its retained BGRA buffer.
 /// Unsupported and undecodable formats pass through byte-for-byte.
+#[cfg(test)]
 fn prepare_image_for_viewport(bytes: Vec<u8>, max_width: u32) -> Vec<u8> {
+    prepare_image(bytes, max_width, u64::MAX)
+}
+
+fn prepare_image(bytes: Vec<u8>, max_width: u32, max_pixels: u64) -> Vec<u8> {
     let max_width = max_width.max(1);
     let Ok(format @ (ImageFormat::Png | ImageFormat::Jpeg)) = image::guess_format(&bytes) else {
         return bytes;
@@ -359,11 +549,17 @@ fn prepare_image_for_viewport(bytes: Vec<u8>, max_width: u32) -> Vec<u8> {
     let Ok(image) = image::load_from_memory_with_format(&bytes, format) else {
         return bytes;
     };
-    if image.width() <= max_width {
+    let source_pixels = u64::from(image.width()).saturating_mul(u64::from(image.height()));
+    if image.width() <= max_width && source_pixels <= max_pixels {
         return bytes;
     }
 
-    let resized = image.resize(max_width, u32::MAX, FilterType::Triangle);
+    let width_scale = max_width as f64 / image.width().max(1) as f64;
+    let pixel_scale = (max_pixels as f64 / source_pixels.max(1) as f64).sqrt();
+    let scale = width_scale.min(pixel_scale).min(1.0);
+    let target_width = (image.width() as f64 * scale).floor().max(1.0) as u32;
+    let target_height = (image.height() as f64 * scale).floor().max(1.0) as u32;
+    let resized = image.resize_exact(target_width, target_height, FilterType::Triangle);
     drop(image);
     let mut output = Cursor::new(Vec::new());
     if resized.write_to(&mut output, ImageFormat::Png).is_err() {
@@ -418,7 +614,6 @@ fn resolve_local_reference(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::AsyncReadExt as _;
     use gpui_http_client::BlockedHttpClient;
     use image::{DynamicImage, ImageBuffer, Rgba};
 
@@ -492,7 +687,11 @@ mod tests {
 
         smol::block_on(local_file_response(
             path,
-            120,
+            ImagePreparation {
+                max_width: 120,
+                max_pixels: u64::MAX,
+                retain: true,
+            },
             1,
             generation,
             Arc::default(),
@@ -503,6 +702,64 @@ mod tests {
 
         assert!(cache.lock().unwrap().is_empty());
         assert_eq!(loads.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn viewer_raster_is_bounded_by_its_pixel_budget() {
+        let source =
+            DynamicImage::ImageRgba8(ImageBuffer::from_pixel(4_000, 3_000, Rgba([1, 2, 3, 255])));
+        let mut encoded = Cursor::new(Vec::new());
+        source.write_to(&mut encoded, ImageFormat::Png).unwrap();
+
+        let prepared = prepare_image(encoded.into_inner(), VIEWER_MAX_IMAGE_WIDTH, 1_000_000);
+        let image = image::load_from_memory(&prepared).unwrap();
+
+        assert!(u64::from(image.width()) * u64::from(image.height()) <= 1_000_000);
+        assert!((image.width() as f32 / image.height() as f32 - 4.0 / 3.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn document_switch_invalidates_viewer_resource() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first.md");
+        let second = directory.path().join("second.md");
+        std::fs::write(&first, "# First").unwrap();
+        std::fs::write(&second, "# Second").unwrap();
+        let root = DocumentImageRoot::default();
+        root.set_document_path(Some(&first));
+        let uri = root.viewer_uri("figure.png");
+        root.set_document_path(Some(&second));
+        let client = DocumentImageClient::new(root, false, Arc::new(BlockedHttpClient::new()));
+
+        let error = smol::block_on(client.get(&uri, AsyncBody::empty(), true))
+            .err()
+            .unwrap();
+
+        assert!(error.to_string().contains("no longer available"));
+    }
+
+    #[test]
+    fn viewer_local_image_does_not_retain_prepared_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let document = directory.path().join("images.md");
+        let image_path = directory.path().join("figure.png");
+        std::fs::write(&document, "![Figure](figure.png)").unwrap();
+        DynamicImage::ImageRgba8(ImageBuffer::from_pixel(300, 180, Rgba([1, 2, 3, 255])))
+            .save(&image_path)
+            .unwrap();
+        let root = DocumentImageRoot::default();
+        root.set_document_path(Some(&document));
+        let viewer_uri = root.viewer_uri("figure.png");
+        let client =
+            DocumentImageClient::new(root.clone(), false, Arc::new(BlockedHttpClient::new()));
+
+        let mut response =
+            smol::block_on(client.get(&viewer_uri, AsyncBody::empty(), true)).unwrap();
+        let mut bytes = Vec::new();
+        smol::block_on(response.body_mut().read_to_end(&mut bytes)).unwrap();
+
+        assert!(!bytes.is_empty());
+        assert!(root.prepared_images.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -525,6 +782,29 @@ mod tests {
         assert_eq!(image.width(), MAX_RASTER_WIDTH);
         assert_eq!(image.height(), MAX_RASTER_WIDTH / 2);
         assert_eq!(root.take_requested_resources(), vec![uri]);
+    }
+
+    #[test]
+    fn viewer_mermaid_raster_rounding_stays_within_pixel_budget() {
+        let root = DocumentImageRoot::default();
+        let key = "c".repeat(64);
+        let svg: Arc<[u8]> = Arc::from(
+            br##"<svg xmlns="http://www.w3.org/2000/svg" width="3335.21875" height="536" viewBox="0 0 3335.21875 536"><rect width="3335.21875" height="536" fill="#587c8d"/></svg>"##
+                .as_slice(),
+        );
+        root.insert_mermaid_svg(&key, svg).unwrap();
+        let client =
+            DocumentImageClient::new(root.clone(), false, Arc::new(BlockedHttpClient::new()));
+        let source_uri = format!("{URI_PREFIX}{key}.png");
+        let viewer_uri = root.viewer_uri(&source_uri);
+
+        let mut response =
+            smol::block_on(client.get(&viewer_uri, AsyncBody::empty(), true)).unwrap();
+        let mut bytes = Vec::new();
+        smol::block_on(response.body_mut().read_to_end(&mut bytes)).unwrap();
+        let image = image::load_from_memory(&bytes).unwrap();
+
+        assert!(u64::from(image.width()) * u64::from(image.height()) <= VIEWER_MAX_IMAGE_PIXELS);
     }
 
     #[test]

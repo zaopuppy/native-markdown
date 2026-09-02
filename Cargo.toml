@@ -8,7 +8,7 @@ build = "build.rs"
 anyhow = "1"
 futures = "0.3"
 gpui = "0.2.2"
-gpui-component = { git = "https://github.com/zaopuppy/gpui-component", rev = "f8b48e94b0653c501f0f4bd14b988a5384cc04a1" }
+gpui-component = { git = "https://github.com/zaopuppy/gpui-component", rev = "46f6b9c41f7db3a41228ca8c15b4680356080f19" }
 gpui_http_client = "0.2.2"
 image = { version = "0.25.10", default-features = false }
 merman = { version = "=0.7.0", features = ["render"] }

@@ -9,6 +9,7 @@ mod document;
 mod file_tree;
 mod image_cache;
 mod image_loader;
+mod image_viewer;
 mod layout_settings;
 mod markdown;
 mod mermaid;
@@ -48,6 +49,7 @@ fn main() {
         gpui_component::init(cx);
         configure_theme(cx);
         app::bind_keys(cx);
+        image_viewer::bind_keys(cx);
 
         let fallback_http_client = cx.http_client();
         cx.set_http_client(Arc::new(DocumentImageClient::new(

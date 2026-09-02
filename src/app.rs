@@ -1,11 +1,13 @@
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::{
     actions, div, image_cache, img, prelude::*, px, relative, rems, rgb, AnyElement, App,
-    AppContext, Context, Entity, ExternalPaths, FocusHandle, ImgResourceLoader, IntoElement,
-    KeyBinding, ObjectFit, PromptButton, PromptLevel, Render, Resource, ScrollWheelEvent,
-    SharedString, StyleRefinement, Subscription, WeakEntity, Window,
+    AppContext, Context, Entity, ExternalPaths, FocusHandle, Focusable, ImgResourceLoader,
+    IntoElement, KeyBinding, ObjectFit, PromptButton, PromptLevel, Render, Resource,
+    ScrollWheelEvent, SharedString, StyleRefinement, Subscription, WeakEntity, WeakFocusHandle,
+    Window,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Escape, Input, InputEvent, InputState, Position};
@@ -24,6 +26,7 @@ use crate::document::Document;
 use crate::file_tree::{self, EntryKind, FileTree, VisibleRow};
 use crate::image_cache::{BudgetImageCache, SOFT_BUDGET_BYTES};
 use crate::image_loader::DocumentImageRoot;
+use crate::image_viewer::ImageViewer;
 use crate::layout_settings::LayoutSettings;
 use crate::markdown::{self, Heading, SearchHit};
 use crate::mermaid::{self, MermaidManager, MermaidPreview, MermaidPreviewStatus, OPEN_TIMEOUT};
@@ -190,6 +193,9 @@ pub struct NativeMarkdownApp {
     image_cache: Entity<BudgetImageCache>,
     image_root: DocumentImageRoot,
     mermaid: MermaidManager,
+    image_viewer: Option<Entity<ImageViewer>>,
+    image_viewer_resource: Option<SharedString>,
+    image_viewer_previous_focus: Option<WeakFocusHandle>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -303,6 +309,7 @@ impl NativeMarkdownApp {
                 |this: &mut Self, editor, event: &InputEvent, window, cx| {
                     if matches!(event, InputEvent::Change) {
                         this.document.content = editor.read(cx).value().to_string();
+                        this.close_image_viewer(window, cx);
                         this.refresh_analysis();
                         this.refresh_mermaid(mermaid::EDIT_TIMEOUT, window, cx);
                         if let Err(error) = this.document.maybe_write_recovery() {
@@ -386,6 +393,9 @@ impl NativeMarkdownApp {
             image_cache,
             image_root,
             mermaid: MermaidManager::new(),
+            image_viewer: None,
+            image_viewer_resource: None,
+            image_viewer_previous_focus: None,
             _subscriptions: subscriptions,
         };
         if let Some(root) = app.file_tree.root().map(Path::to_path_buf) {
@@ -709,6 +719,7 @@ impl NativeMarkdownApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.close_image_viewer(window, cx);
         self.release_document_images(window, cx);
         self.mermaid.reset();
         self.document = document;
@@ -1841,6 +1852,74 @@ impl NativeMarkdownApp {
         )
     }
 
+    fn open_image_viewer(
+        &mut self,
+        preview_uri: SharedString,
+        title: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let replacing_viewer = self.image_viewer.take().is_some();
+        if replacing_viewer {
+            self.release_image_viewer_resource(window, cx);
+        }
+        if !replacing_viewer {
+            self.image_viewer_previous_focus = window.focused(cx).map(|focus| focus.downgrade());
+        }
+        let high_resolution_uri = SharedString::from(self.image_root.viewer_uri(&preview_uri));
+        self.image_viewer_resource = Some(high_resolution_uri.clone());
+        let high_resolution_resource = Resource::Uri(high_resolution_uri.clone().into());
+        self.image_cache.update(cx, |cache, _| {
+            cache.protect_resource(&high_resolution_resource)
+        });
+        let app = cx.entity().downgrade();
+        let viewer = cx.new(|cx| {
+            ImageViewer::new(
+                preview_uri,
+                high_resolution_uri,
+                title,
+                self.image_cache.clone(),
+                Rc::new(move |window, cx| {
+                    app.update(cx, |app, cx| app.close_image_viewer(window, cx))
+                        .ok();
+                }),
+                cx,
+            )
+        });
+        viewer.read(cx).focus(window);
+        self.image_viewer = Some(viewer);
+        cx.notify();
+    }
+
+    fn release_image_viewer_resource(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(high_resolution_uri) = self.image_viewer_resource.take() else {
+            return;
+        };
+        let resource = Resource::Uri(high_resolution_uri.clone().into());
+        self.image_cache.update(cx, |cache, cx| {
+            cache.release_resource(&resource, window, cx)
+        });
+        self.image_root.release_viewer_uri(&high_resolution_uri);
+    }
+
+    fn close_image_viewer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(viewer) = self.image_viewer.take() else {
+            return;
+        };
+        drop(viewer);
+        self.release_image_viewer_resource(window, cx);
+        if let Some(focus) = self
+            .image_viewer_previous_focus
+            .take()
+            .and_then(|focus| focus.upgrade())
+        {
+            focus.focus(window);
+        } else {
+            self.editor.read(cx).focus_handle(cx).focus(window);
+        }
+        cx.notify();
+    }
+
     fn preview_panel(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let logical_width: f32 = window.viewport_size().width.into();
         let panel_fraction = if self.view_mode == ViewMode::Split {
@@ -1854,6 +1933,7 @@ impl NativeMarkdownApp {
             .clamp(1.0, 1_280.0) as u32;
         self.image_root.set_viewport_width(viewport_width);
         let app = cx.entity().downgrade();
+        let image_app = app.clone();
         let (preview_source, preview_source_offset) = self.preview_source();
         let zoom_factor = self.zoom.factor();
         let mut preview = TextView::markdown("native-markdown-preview", preview_source, window, cx)
@@ -1866,7 +1946,7 @@ impl NativeMarkdownApp {
                 preview = preview.scroll_to_heading_once(heading_index, self.outline_jump_request);
             }
         }
-        let preview = preview.code_block_renderer(move |code_block, _, cx| {
+        let preview = preview.code_block_renderer(move |code_block, window, cx| {
             if !code_block
                 .lang()
                 .as_deref()
@@ -1884,7 +1964,21 @@ impl NativeMarkdownApp {
                 preview_logical_width.ceil().clamp(1.0, u32::MAX as f32) as u32,
                 app_state.zoom.percent(),
             )?;
-            Some(mermaid_preview_element(preview, app.clone()))
+            Some(mermaid_preview_element(preview, app.clone(), window, cx))
+        });
+        let preview = preview.image_activation_handler(move |image, _, window, cx| {
+            if image.link_url.is_some() {
+                return false;
+            }
+            let uri = SharedString::from(image.url.to_string());
+            let title = image
+                .title
+                .clone()
+                .or_else(|| image.alt.clone())
+                .unwrap_or_default();
+            image_app
+                .update(cx, |app, cx| app.open_image_viewer(uri, title, window, cx))
+                .is_ok()
         });
 
         div()
@@ -2160,6 +2254,9 @@ impl NativeMarkdownApp {
     }
 
     fn handle_drop(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
+        if self.image_viewer.is_some() {
+            return;
+        }
         if let Some(path) = paths.paths().iter().find(|path| path.is_file()).cloned() {
             self.request_document_action(DocumentAction::OpenPath(path), window, cx);
         }
@@ -2214,6 +2311,7 @@ impl Render for NativeMarkdownApp {
             }))
             .on_drop(cx.listener(Self::handle_drop))
             .v_flex()
+            .relative()
             .size_full()
             .overflow_hidden()
             .bg(rgb(0xf6f1e7))
@@ -2222,14 +2320,18 @@ impl Render for NativeMarkdownApp {
             .when(self.search_open, |view| view.child(self.search_bar(cx)))
             .child(self.workspace(window, cx))
             .child(self.status_bar(cx))
+            .when_some(self.image_viewer.clone(), |root, viewer| root.child(viewer))
     }
 }
 
 fn mermaid_preview_element(
     preview: MermaidPreview,
     app: WeakEntity<NativeMarkdownApp>,
+    window: &mut Window,
+    cx: &mut App,
 ) -> AnyElement {
     let display_width = preview.display_width;
+    let preview_index = preview.index;
     let (image_uri, message, is_error) = match preview.status {
         MermaidPreviewStatus::Ready { image_uri } => (Some(image_uri), None, false),
         MermaidPreviewStatus::Loading { image_uri, message } => (image_uri, Some(message), false),
@@ -2237,11 +2339,38 @@ fn mermaid_preview_element(
     };
     let mut element = div().v_flex().w_full().gap_2();
     if let Some(image_uri) = image_uri {
+        let focus_handle = window
+            .use_keyed_state(("mermaid-preview-image", preview_index), cx, |_, cx| {
+                cx.focus_handle()
+            })
+            .read(cx)
+            .clone()
+            .tab_stop(true);
+        let viewer_uri = SharedString::from(image_uri.clone());
+        let image_app = app.clone();
         element = element.child(
             img(SharedString::from(image_uri))
+                .id(("mermaid-preview-image-element", preview_index))
+                .track_focus(&focus_handle)
+                .cursor_pointer()
+                .tooltip(|window, cx| Tooltip::new("Click to view image").build(window, cx))
                 .object_fit(ObjectFit::Contain)
                 .max_w(relative(1.0))
-                .when_some(display_width, |image, width| image.w(px(width as f32))),
+                .when_some(display_width, |image, width| image.w(px(width as f32)))
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(move |_, window, cx| {
+                    image_app
+                        .update(cx, |app, cx| {
+                            app.open_image_viewer(
+                                viewer_uri.clone(),
+                                "Mermaid diagram".into(),
+                                window,
+                                cx,
+                            )
+                        })
+                        .ok();
+                    cx.stop_propagation();
+                }),
         );
     }
     if let Some(message) = message {
@@ -2299,7 +2428,120 @@ fn byte_offset_position(source: &str, offset: usize) -> Position {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{size, TestAppContext};
+    use gpui::{point, size, Modifiers, ScrollDelta, TestAppContext, TouchPhase};
+
+    fn draw_app(cx: &mut gpui::VisualTestContext) {
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+    }
+
+    #[gpui::test]
+    fn plain_markdown_image_opens_modal_viewer_and_keeps_document_zoom(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        cx.update(crate::image_viewer::bind_keys);
+        let directory = tempfile::tempdir().unwrap();
+        let image_path = directory.path().join("figure.png");
+        image::DynamicImage::ImageRgba8(image::ImageBuffer::from_pixel(
+            320,
+            180,
+            image::Rgba([80, 120, 160, 255]),
+        ))
+        .save(&image_path)
+        .unwrap();
+        let document_path = directory.path().join("images.md");
+        std::fs::write(&document_path, "# Image\n\n![Details](figure.png)\n").unwrap();
+        let image_root = DocumentImageRoot::default();
+        let fallback = cx.update(|cx| cx.http_client());
+        cx.update(|cx| {
+            cx.set_http_client(std::sync::Arc::new(
+                crate::image_loader::DocumentImageClient::new(image_root.clone(), false, fallback),
+            ))
+        });
+        let (app, cx) = cx.add_window_view(|window, cx| {
+            NativeMarkdownApp::new(Some(document_path), image_root, window, cx)
+        });
+        draw_app(cx);
+        let image = cx.debug_bounds("text-view-image").unwrap();
+
+        cx.simulate_click(image.center(), Modifiers::default());
+        draw_app(cx);
+
+        assert!(cx.debug_bounds("image-viewer").is_some());
+        let surface = cx.debug_bounds("image-viewer-surface").unwrap();
+        let preview = cx.debug_bounds("image-viewer-preview-image").unwrap();
+        let high_resolution = cx
+            .debug_bounds("image-viewer-high-resolution-image")
+            .unwrap();
+        assert!(
+            surface.contains(&preview.center()),
+            "preview image must overlap its surface"
+        );
+        assert!(
+            surface.contains(&high_resolution.center()),
+            "high-resolution image must overlap its surface"
+        );
+        let open_cache_bytes = app.read_with(cx, |app, cx| {
+            app.image_cache.read(cx).status().estimated_bytes
+        });
+        assert!(open_cache_bytes > 0);
+        let document_zoom = app.read_with(cx, |app, _| app.zoom.percent());
+        cx.simulate_event(ScrollWheelEvent {
+            position: image.center(),
+            delta: ScrollDelta::Lines(point(0.0, 3.0)),
+            modifiers: Modifiers::default(),
+            touch_phase: TouchPhase::Moved,
+        });
+        assert_eq!(
+            app.read_with(cx, |app, _| app.zoom.percent()),
+            document_zoom
+        );
+
+        cx.simulate_keystrokes("escape");
+        draw_app(cx);
+        app.read_with(cx, |app, cx| {
+            assert!(app.image_viewer.is_none());
+            assert!(
+                app.image_cache.read(cx).status().estimated_bytes < open_cache_bytes,
+                "closing the viewer must release its high-resolution cache entry"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn linked_markdown_image_preserves_link_activation(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().unwrap();
+        let image_path = directory.path().join("figure.png");
+        image::DynamicImage::ImageRgba8(image::ImageBuffer::from_pixel(
+            40,
+            40,
+            image::Rgba([80, 120, 160, 255]),
+        ))
+        .save(&image_path)
+        .unwrap();
+        let document_path = directory.path().join("linked-image.md");
+        std::fs::write(
+            &document_path,
+            "[![Website](figure.png)](https://example.com/)\n",
+        )
+        .unwrap();
+        let image_root = DocumentImageRoot::default();
+        let (app, cx) = cx.add_window_view(|window, cx| {
+            NativeMarkdownApp::new(Some(document_path), image_root, window, cx)
+        });
+        draw_app(cx);
+        let image = cx.debug_bounds("text-view-image").unwrap();
+
+        cx.simulate_click(image.center(), Modifiers::default());
+
+        assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/"));
+        app.read_with(cx, |app, _| assert!(app.image_viewer.is_none()));
+    }
 
     #[gpui::test]
     fn escape_closes_search_and_preserves_the_query(cx: &mut TestAppContext) {
