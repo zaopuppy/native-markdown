@@ -10,11 +10,11 @@ use gpui_http_client::http::HeaderValue;
 use gpui_http_client::{AsyncBody, HttpClient, Request, Response, StatusCode, Url};
 use image::{imageops::FilterType, ImageFormat};
 
-use crate::mermaid::{MAX_RASTER_PIXELS, URI_PREFIX};
+use crate::mermaid::{MAX_RASTER_PIXELS, MAX_RASTER_WIDTH, URI_PREFIX};
 
 // Markdown images never need more decoded pixels than the reading surface can display. A bounded
 // physical width also keeps ultra-wide source figures from dominating the process heap.
-const MAX_PREPARED_IMAGE_WIDTH: u32 = 1_280;
+const MAX_PREPARED_IMAGE_WIDTH: u32 = MAX_RASTER_WIDTH;
 const MAX_MERMAID_SVG_STORE_BYTES: usize = 16 * 1024 * 1024;
 type PreparedImageCache = Arc<Mutex<HashMap<(PathBuf, u32), Arc<[u8]>>>>;
 
@@ -35,7 +35,6 @@ pub struct DocumentImageRoot {
     preparation_gate: Arc<Mutex<()>>,
     prepared_images: PreparedImageCache,
     mermaid_svgs: Arc<RwLock<MermaidSvgStore>>,
-    mermaid_requested_resources: Arc<RwLock<HashSet<String>>>,
 }
 
 impl Default for DocumentImageRoot {
@@ -50,7 +49,6 @@ impl Default for DocumentImageRoot {
             preparation_gate: Arc::default(),
             prepared_images: Arc::default(),
             mermaid_svgs: Arc::default(),
-            mermaid_requested_resources: Arc::default(),
         }
     }
 }
@@ -77,10 +75,6 @@ impl DocumentImageRoot {
             .expect("Mermaid SVG store lock poisoned");
         mermaid.entries.clear();
         mermaid.bytes = 0;
-        self.mermaid_requested_resources
-            .write()
-            .expect("Mermaid requested-resource lock poisoned")
-            .clear();
     }
 
     pub fn load_count(&self) -> usize {
@@ -126,23 +120,6 @@ impl DocumentImageRoot {
             .expect("Mermaid SVG store lock poisoned");
         store.entries.retain(|key, _| keys.contains(key));
         store.bytes = store.entries.values().map(|svg| svg.len()).sum();
-    }
-
-    pub fn take_mermaid_requested_resources(&self) -> Vec<String> {
-        let resources = self
-            .mermaid_requested_resources
-            .write()
-            .expect("Mermaid requested-resource lock poisoned")
-            .drain()
-            .collect::<Vec<_>>();
-        let mut all_resources = self
-            .requested_resources
-            .write()
-            .expect("requested image resource lock poisoned");
-        for resource in &resources {
-            all_resources.remove(resource);
-        }
-        resources
     }
 }
 
@@ -246,7 +223,7 @@ fn mermaid_image_response(
     uri: String,
 ) -> BoxFuture<'static, anyhow::Result<Response<AsyncBody>>> {
     Box::pin(async move {
-        let (key, width, zoom_percent) = parse_mermaid_uri(&uri)?;
+        let key = parse_mermaid_uri(&uri)?;
         let svg = root
             .mermaid_svgs
             .read()
@@ -255,15 +232,11 @@ fn mermaid_image_response(
             .get(key)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Mermaid image is no longer available"))?;
-        let png = rasterize_mermaid_svg(&svg, width, zoom_percent)?;
+        let png = rasterize_mermaid_svg(&svg, MAX_RASTER_WIDTH)?;
         root.requested_resources
             .write()
             .expect("requested image resource lock poisoned")
             .insert(uri.clone());
-        root.mermaid_requested_resources
-            .write()
-            .expect("Mermaid requested-resource lock poisoned")
-            .insert(uri);
         root.loads.fetch_add(1, Ordering::Relaxed);
         Ok(Response::builder()
             .status(StatusCode::OK)
@@ -271,38 +244,20 @@ fn mermaid_image_response(
     })
 }
 
-fn parse_mermaid_uri(uri: &str) -> anyhow::Result<(&str, u32, u32)> {
+fn parse_mermaid_uri(uri: &str) -> anyhow::Result<&str> {
     let remainder = uri
         .strip_prefix(URI_PREFIX)
         .ok_or_else(|| anyhow::anyhow!("invalid Mermaid image URI"))?;
-    let (path, query) = remainder.split_once('?').unwrap_or((remainder, ""));
-    let key = path
+    let key = remainder
         .strip_suffix(".png")
         .ok_or_else(|| anyhow::anyhow!("invalid Mermaid image extension"))?;
     if key.len() != 64 || !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         bail!("invalid Mermaid image key");
     }
-    let mut width = MAX_PREPARED_IMAGE_WIDTH;
-    let mut zoom = 100_u32;
-    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
-        if let Some(value) = pair.strip_prefix("w=") {
-            width = value
-                .parse::<u32>()
-                .map_err(|_| anyhow::anyhow!("invalid Mermaid image width"))?
-                .clamp(1, MAX_PREPARED_IMAGE_WIDTH);
-        } else if let Some(value) = pair.strip_prefix("z=") {
-            zoom = value
-                .parse::<u32>()
-                .map_err(|_| anyhow::anyhow!("invalid Mermaid image zoom"))?
-                .clamp(50, 250);
-        } else {
-            bail!("unknown Mermaid image parameter");
-        }
-    }
-    Ok((key, width, zoom))
+    Ok(key)
 }
 
-fn rasterize_mermaid_svg(svg: &[u8], max_width: u32, zoom_percent: u32) -> anyhow::Result<Vec<u8>> {
+fn rasterize_mermaid_svg(svg: &[u8], target_width: u32) -> anyhow::Result<Vec<u8>> {
     static FONT_DATABASE: OnceLock<Arc<resvg::usvg::fontdb::Database>> = OnceLock::new();
     let fontdb = FONT_DATABASE.get_or_init(|| {
         let mut database = resvg::usvg::fontdb::Database::new();
@@ -319,8 +274,7 @@ fn rasterize_mermaid_svg(svg: &[u8], max_width: u32, zoom_percent: u32) -> anyho
     let source_size = tree.size();
     let source_width = source_size.width().max(1.0);
     let source_height = source_size.height().max(1.0);
-    let zoom = zoom_percent as f32 / 100.0;
-    let desired_width = (source_width * zoom).min(max_width as f32).max(1.0);
+    let desired_width = target_width.clamp(1, MAX_RASTER_WIDTH) as f32;
     let mut scale = desired_width / source_width;
     let desired_pixels = source_width as f64 * source_height as f64 * scale as f64 * scale as f64;
     if desired_pixels > MAX_RASTER_PIXELS as f64 {
@@ -562,22 +516,22 @@ mod tests {
         root.insert_mermaid_svg(&key, svg).unwrap();
         let client =
             DocumentImageClient::new(root.clone(), true, Arc::new(BlockedHttpClient::new()));
-        let uri = format!("{URI_PREFIX}{key}.png?w=200&z=100");
+        let uri = format!("{URI_PREFIX}{key}.png");
         let mut response = smol::block_on(client.get(&uri, AsyncBody::empty(), true)).unwrap();
         let mut bytes = Vec::new();
         smol::block_on(response.body_mut().read_to_end(&mut bytes)).unwrap();
         let image = image::load_from_memory(&bytes).unwrap();
 
-        assert_eq!(image.width(), 200);
-        assert_eq!(image.height(), 100);
-        assert_eq!(root.take_mermaid_requested_resources(), vec![uri]);
+        assert_eq!(image.width(), MAX_RASTER_WIDTH);
+        assert_eq!(image.height(), MAX_RASTER_WIDTH / 2);
+        assert_eq!(root.take_requested_resources(), vec![uri]);
     }
 
     #[test]
     fn unknown_mermaid_key_never_falls_back_to_remote_http() {
         let root = DocumentImageRoot::default();
         let client = DocumentImageClient::new(root, true, Arc::new(BlockedHttpClient::new()));
-        let uri = format!("{URI_PREFIX}{}.png?w=200&z=100", "b".repeat(64));
+        let uri = format!("{URI_PREFIX}{}.png", "b".repeat(64));
         let error = smol::block_on(client.get(&uri, AsyncBody::empty(), true))
             .err()
             .unwrap();

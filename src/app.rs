@@ -2,25 +2,27 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    actions, div, image_cache, img, prelude::*, px, relative, rgb, AnyElement, App, AppContext,
-    Context, Entity, ExternalPaths, FocusHandle, ImgResourceLoader, IntoElement, KeyBinding,
-    ObjectFit, PromptButton, PromptLevel, Render, Resource, ScrollWheelEvent, SharedString,
-    Subscription, WeakEntity, Window,
+    actions, div, image_cache, img, prelude::*, px, relative, rems, rgb, AnyElement, App,
+    AppContext, Context, Entity, ExternalPaths, FocusHandle, ImgResourceLoader, IntoElement,
+    KeyBinding, ObjectFit, PromptButton, PromptLevel, Render, Resource, ScrollWheelEvent,
+    SharedString, StyleRefinement, Subscription, WeakEntity, Window,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Escape, Input, InputEvent, InputState, Position};
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::resizable::{h_resizable, resizable_panel, ResizableState};
 use gpui_component::scroll::ScrollableElement as _;
-use gpui_component::text::TextView;
+use gpui_component::text::{TextView, TextViewStyle};
 use gpui_component::tooltip::Tooltip;
-use gpui_component::{Disableable as _, Selectable as _, Sizable as _, StyledExt as _, Theme};
+#[cfg(test)]
+use gpui_component::Theme;
+use gpui_component::{Disableable as _, Selectable as _, Sizable as _, StyledExt as _};
 use rfd::AsyncFileDialog;
 
 use crate::benchmark::BenchmarkScenario;
 use crate::document::Document;
 use crate::file_tree::{self, EntryKind, FileTree, VisibleRow};
-use crate::image_cache::{BudgetImageCache, WARNING_THRESHOLD_BYTES};
+use crate::image_cache::{BudgetImageCache, SOFT_BUDGET_BYTES};
 use crate::image_loader::DocumentImageRoot;
 use crate::layout_settings::LayoutSettings;
 use crate::markdown::{self, Heading, SearchHit};
@@ -31,6 +33,7 @@ const APP_CONTEXT: &str = "NativeMarkdown";
 const FILE_TREE_CONTEXT: &str = "NativeMarkdownFileTree";
 const BASE_FONT_SIZE: f32 = 16.0;
 const BASE_MONO_FONT_SIZE: f32 = 13.0;
+const BASE_HEADING_FONT_SIZE: f32 = 14.0;
 const FILE_TREE_HIDE_BELOW: f32 = 760.0;
 const OUTLINE_HIDE_BELOW: f32 = 1000.0;
 
@@ -55,6 +58,14 @@ fn state_button(button: Button, selected: bool) -> Button {
 
 fn outline_indent(level: u8) -> f32 {
     8.0 + level.saturating_sub(1) as f32 * 14.0
+}
+
+fn document_text_view_style(factor: f32) -> TextViewStyle {
+    let mut style = TextViewStyle::default()
+        .paragraph_gap(rems(factor))
+        .code_block(StyleRefinement::default().text_size(px(BASE_MONO_FONT_SIZE * factor)));
+    style.heading_base_font_size = px(BASE_HEADING_FONT_SIZE * factor);
+    style
 }
 
 actions!(
@@ -729,18 +740,6 @@ impl NativeMarkdownApp {
         }
     }
 
-    fn release_mermaid_images(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        for uri in self.image_root.take_mermaid_requested_resources() {
-            let resource = Resource::Uri(uri.into());
-            self.image_cache
-                .update(cx, |cache, cx| cache.remove_resource(&resource, window, cx));
-            if let Some(Ok(image)) = window.get_asset::<ImgResourceLoader>(&resource, cx) {
-                cx.drop_image(image, Some(window));
-            }
-            cx.remove_asset::<ImgResourceLoader>(&resource);
-        }
-    }
-
     /// The only entry point for actions that can replace the current document.
     ///
     /// GPUI owns the application state through a `RefCell`. A blocking native dialog would run a
@@ -1063,12 +1062,7 @@ impl NativeMarkdownApp {
         cx.notify();
     }
 
-    fn apply_zoom(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let factor = self.zoom.factor();
-        let theme = Theme::global_mut(cx);
-        theme.font_size = px(BASE_FONT_SIZE * factor);
-        theme.mono_font_size = px(BASE_MONO_FONT_SIZE * factor);
-        self.release_mermaid_images(window, cx);
+    fn apply_zoom(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         cx.notify();
     }
 
@@ -1196,6 +1190,7 @@ impl NativeMarkdownApp {
         let tree_visible = regular_tree || overlay_tree;
         let outline_visible = regular_outline || overlay_outline;
         div()
+            .debug_selector(|| "application-toolbar".into())
             .h_flex()
             .h(px(72.0))
             .flex_none()
@@ -1853,13 +1848,17 @@ impl NativeMarkdownApp {
         } else {
             1.0
         };
-        let viewport_width = (logical_width * panel_fraction * window.scale_factor())
+        let preview_logical_width = logical_width * panel_fraction;
+        let viewport_width = (preview_logical_width * window.scale_factor())
             .ceil()
             .clamp(1.0, 1_280.0) as u32;
         self.image_root.set_viewport_width(viewport_width);
         let app = cx.entity().downgrade();
         let (preview_source, preview_source_offset) = self.preview_source();
+        let zoom_factor = self.zoom.factor();
         let mut preview = TextView::markdown("native-markdown-preview", preview_source, window, cx)
+            .style(document_text_view_style(zoom_factor))
+            .text_size(px(BASE_FONT_SIZE * zoom_factor))
             .selectable(true)
             .scrollable(true);
         if self.outline_mode == OutlineMode::Jump {
@@ -1882,7 +1881,7 @@ impl NativeMarkdownApp {
             let app_state = entity.read(cx);
             let preview = app_state.mermaid.preview_for_block(
                 source_range,
-                viewport_width,
+                preview_logical_width.ceil().clamp(1.0, u32::MAX as f32) as u32,
                 app_state.zoom.percent(),
             )?;
             Some(mermaid_preview_element(preview, app.clone()))
@@ -1930,7 +1929,12 @@ impl NativeMarkdownApp {
             .min_h_0()
             .overflow_hidden()
             .bg(rgb(0xeee9df))
-            .child(Input::new(&self.editor).h_full().appearance(false))
+            .child(
+                Input::new(&self.editor)
+                    .h_full()
+                    .text_size(px(BASE_MONO_FONT_SIZE * self.zoom.factor()))
+                    .appearance(false),
+            )
     }
 
     fn welcome(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2099,10 +2103,10 @@ impl NativeMarkdownApp {
     fn status_bar(&self, cx: &Context<Self>) -> impl IntoElement {
         let image_cache = self.image_cache.read(cx).status();
         let image_cache_mib = image_cache.estimated_bytes as f64 / 1024.0 / 1024.0;
-        let image_status = if image_cache.over_warning_threshold {
+        let image_status = if image_cache.over_soft_budget {
             format!(
-                " · image cache {image_cache_mib:.1} MiB (above {} MiB; retained for smooth scrolling)",
-                WARNING_THRESHOLD_BYTES / 1024 / 1024
+                " · image cache {image_cache_mib:.1} MiB ({} MiB soft budget; current image retained)",
+                SOFT_BUDGET_BYTES / 1024 / 1024
             )
         } else if image_cache.estimated_bytes > 0 {
             format!(" · image cache {image_cache_mib:.1} MiB")
@@ -2225,6 +2229,7 @@ fn mermaid_preview_element(
     preview: MermaidPreview,
     app: WeakEntity<NativeMarkdownApp>,
 ) -> AnyElement {
+    let display_width = preview.display_width;
     let (image_uri, message, is_error) = match preview.status {
         MermaidPreviewStatus::Ready { image_uri } => (Some(image_uri), None, false),
         MermaidPreviewStatus::Loading { image_uri, message } => (image_uri, Some(message), false),
@@ -2235,7 +2240,8 @@ fn mermaid_preview_element(
         element = element.child(
             img(SharedString::from(image_uri))
                 .object_fit(ObjectFit::Contain)
-                .max_w(relative(1.0)),
+                .max_w(relative(1.0))
+                .when_some(display_width, |image, width| image.w(px(width as f32))),
         );
     }
     if let Some(message) = message {
@@ -2619,5 +2625,57 @@ mod tests {
             assert_eq!(app.word_count, 6);
             assert_eq!(app.reading_minutes, 1);
         });
+    }
+
+    #[gpui::test]
+    fn document_zoom_does_not_change_the_application_theme(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let image_root = DocumentImageRoot::default();
+        let (app, cx) =
+            cx.add_window_view(|window, cx| NativeMarkdownApp::new(None, image_root, window, cx));
+
+        cx.update(|window, cx| {
+            let initial_font_size = Theme::global(cx).font_size;
+            let initial_mono_font_size = Theme::global(cx).mono_font_size;
+
+            app.update(cx, |app, cx| app.zoom_in(window, cx));
+
+            assert_eq!(Theme::global(cx).font_size, initial_font_size);
+            assert_eq!(Theme::global(cx).mono_font_size, initial_mono_font_size);
+        });
+    }
+
+    #[test]
+    fn document_zoom_scales_headings_and_spacing_together() {
+        let style = document_text_view_style(2.0);
+
+        assert_eq!(style.heading_base_font_size, px(28.0));
+        assert_eq!(style.paragraph_gap, rems(2.0));
+    }
+
+    #[gpui::test]
+    fn document_zoom_keeps_toolbar_at_fixed_height(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let image_root = DocumentImageRoot::default();
+        let (app, cx) =
+            cx.add_window_view(|window, cx| NativeMarkdownApp::new(None, image_root, window, cx));
+        cx.simulate_resize(size(px(1180.0), px(780.0)));
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        let toolbar_before = cx.debug_bounds("application-toolbar").unwrap();
+
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.zoom = ZoomLevel::from_factor(2.5);
+                app.apply_zoom(window, cx);
+            });
+            let _ = window.draw(cx);
+        });
+
+        assert_eq!(
+            cx.debug_bounds("application-toolbar").unwrap().size.height,
+            toolbar_before.size.height
+        );
     }
 }

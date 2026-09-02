@@ -8,17 +8,21 @@ use gpui::{
 };
 use image::{imageops::FilterType, Frame, ImageBuffer, Rgba};
 
-pub const WARNING_THRESHOLD_BYTES: usize = 48 * 1024 * 1024;
+use crate::mermaid::{MAX_RASTER_WIDTH, URI_PREFIX};
+
+pub const SOFT_BUDGET_BYTES: usize = 100 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ImageCacheStatus {
     pub estimated_bytes: usize,
-    pub over_warning_threshold: bool,
+    pub over_soft_budget: bool,
 }
 
 struct CacheEntry {
+    resource: Resource,
     item: ImageCacheItem,
     estimated_bytes: Option<usize>,
+    last_access: u64,
 }
 
 /// A retained document-scoped image cache with an explicit CPU + GPU memory estimate.
@@ -28,6 +32,7 @@ struct CacheEntry {
 pub struct BudgetImageCache {
     entries: HashMap<u64, CacheEntry>,
     estimated_bytes: usize,
+    access_clock: u64,
 }
 
 impl BudgetImageCache {
@@ -35,6 +40,7 @@ impl BudgetImageCache {
         let cache = cx.new(|_| Self {
             entries: HashMap::new(),
             estimated_bytes: 0,
+            access_clock: 0,
         });
         cx.observe_release(&cache, |cache, cx| {
             for (_, mut entry) in std::mem::take(&mut cache.entries) {
@@ -50,7 +56,7 @@ impl BudgetImageCache {
     pub fn status(&self) -> ImageCacheStatus {
         ImageCacheStatus {
             estimated_bytes: self.estimated_bytes,
-            over_warning_threshold: self.estimated_bytes > WARNING_THRESHOLD_BYTES,
+            over_soft_budget: self.estimated_bytes > SOFT_BUDGET_BYTES,
         }
     }
 
@@ -59,10 +65,6 @@ impl BudgetImageCache {
         for hash in hashes {
             self.remove(hash, window, cx);
         }
-    }
-
-    pub fn remove_resource(&mut self, resource: &Resource, window: &mut Window, cx: &mut App) {
-        self.remove(hash(resource), window, cx);
     }
 
     fn record_loaded_size(
@@ -94,10 +96,45 @@ impl BudgetImageCache {
         self.estimated_bytes = self
             .estimated_bytes
             .saturating_sub(entry.estimated_bytes.unwrap_or(0));
-        if let Some(Ok(image)) = entry.item.get() {
-            cx.drop_image(image, Some(window));
+        let cached_image = entry.item.get().and_then(Result::ok);
+        if let Some(image) = &cached_image {
+            cx.drop_image(image.clone(), Some(window));
+        }
+        if let Some(Ok(global_image)) = window.get_asset::<ImgResourceLoader>(&entry.resource, cx) {
+            let already_dropped = cached_image
+                .as_ref()
+                .is_some_and(|cached| Arc::ptr_eq(cached, &global_image));
+            if !already_dropped {
+                cx.drop_image(global_image, Some(window));
+            }
+        }
+        cx.remove_asset::<ImgResourceLoader>(&entry.resource);
+    }
+
+    fn evict_to_budget(&mut self, protected_hash: u64, window: &mut Window, cx: &mut App) {
+        while self.estimated_bytes > SOFT_BUDGET_BYTES {
+            let Some(candidate) = select_lru_candidate(
+                self.entries.iter().map(|(hash, entry)| {
+                    (*hash, entry.last_access, entry.estimated_bytes.unwrap_or(0))
+                }),
+                protected_hash,
+            ) else {
+                break;
+            };
+            self.remove(candidate, window, cx);
         }
     }
+}
+
+fn select_lru_candidate(
+    entries: impl IntoIterator<Item = (u64, u64, usize)>,
+    protected_hash: u64,
+) -> Option<u64> {
+    entries
+        .into_iter()
+        .filter(|(hash, _, bytes)| *hash != protected_hash && *bytes > 0)
+        .min_by_key(|(_, last_access, _)| *last_access)
+        .map(|(hash, _, _)| hash)
 }
 
 #[derive(Clone, Hash)]
@@ -190,17 +227,26 @@ impl ImageCache for BudgetImageCache {
         cx: &mut App,
     ) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {
         let resource_hash = hash(resource);
+        self.access_clock = self.access_clock.wrapping_add(1);
+        let access = self.access_clock;
 
         if let Some(entry) = self.entries.get_mut(&resource_hash) {
+            entry.last_access = access;
             let result = entry.item.get()?;
             self.record_loaded_size(resource_hash, &result);
+            self.evict_to_budget(resource_hash, window, cx);
             return Some(result);
         }
+
+        let max_width = match resource {
+            Resource::Uri(uri) if uri.as_ref().starts_with(URI_PREFIX) => MAX_RASTER_WIDTH,
+            _ => viewport_device_width(window),
+        };
 
         let future = AssetLogger::<SizedImageAssetLoader>::load(
             SizedImageResource {
                 resource: resource.clone(),
-                max_width: viewport_device_width(window),
+                max_width,
             },
             cx,
         );
@@ -208,8 +254,10 @@ impl ImageCache for BudgetImageCache {
         self.entries.insert(
             resource_hash,
             CacheEntry {
+                resource: resource.clone(),
                 item: ImageCacheItem::Loading(task.clone()),
                 estimated_bytes: None,
+                last_access: access,
             },
         );
 
@@ -229,8 +277,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn warning_threshold_does_not_imply_an_eviction_limit() {
-        assert_eq!(WARNING_THRESHOLD_BYTES / 1024 / 1024, 48);
+    fn image_cache_soft_budget_is_one_hundred_mib() {
+        assert_eq!(SOFT_BUDGET_BYTES / 1024 / 1024, 100);
+    }
+
+    #[test]
+    fn lru_eviction_prefers_the_oldest_loaded_unprotected_candidate() {
+        let entries = [(10, 1, 32), (20, 2, 48), (30, 0, 0), (40, 4, 64)];
+
+        assert_eq!(select_lru_candidate(entries, 20), Some(10));
+        assert_eq!(select_lru_candidate(entries, 10), Some(20));
     }
 
     #[test]

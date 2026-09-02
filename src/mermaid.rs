@@ -20,6 +20,7 @@ pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
 pub const MAX_DOCUMENT_DIAGRAMS: usize = 64;
 pub const MAX_SVG_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_SVG_ELEMENTS: usize = 50_000;
+pub const MAX_RASTER_WIDTH: u32 = 1_280;
 pub const MAX_RASTER_PIXELS: u64 = 4_194_304;
 pub const EDIT_TIMEOUT: Duration = Duration::from_secs(1);
 pub const OPEN_TIMEOUT: Duration = Duration::from_secs(3);
@@ -89,6 +90,7 @@ pub struct MermaidPreview {
     pub index: usize,
     pub diagram_label: String,
     pub experimental: bool,
+    pub display_width: Option<u32>,
     pub status: MermaidPreviewStatus,
 }
 
@@ -109,6 +111,7 @@ pub struct MermaidManager {
     worker: MermaidWorker,
     blocks: Vec<BlockState>,
     ready_keys: HashSet<String>,
+    asset_widths: HashMap<String, f32>,
     pending_keys: HashSet<String>,
 }
 
@@ -118,6 +121,7 @@ impl MermaidManager {
             worker: MermaidWorker::new(),
             blocks: Vec::new(),
             ready_keys: HashSet::new(),
+            asset_widths: HashMap::new(),
             pending_keys: HashSet::new(),
         }
     }
@@ -125,6 +129,7 @@ impl MermaidManager {
     pub fn reset(&mut self) {
         self.blocks.clear();
         self.ready_keys.clear();
+        self.asset_widths.clear();
         self.pending_keys.clear();
     }
 
@@ -185,6 +190,9 @@ impl MermaidManager {
             .map(|state| state.block.source_key.clone())
             .collect::<HashSet<_>>();
         self.pending_keys.retain(|key| active_keys.contains(key));
+        let referenced_assets = self.referenced_assets();
+        self.asset_widths
+            .retain(|key, _| referenced_assets.contains(key));
         jobs
     }
 
@@ -214,8 +222,13 @@ impl MermaidManager {
 
         match result {
             Ok(svg) => {
+                let intrinsic_width = svg_intrinsic_width(svg.as_bytes());
                 let svg: Arc<[u8]> = svg.into_bytes().into();
                 self.ready_keys.insert(source_key.to_owned());
+                if let Some(intrinsic_width) = intrinsic_width {
+                    self.asset_widths
+                        .insert(source_key.to_owned(), intrinsic_width);
+                }
                 for state in &mut self.blocks {
                     if state.block.source_key == source_key {
                         state.status = RenderStatus::Ready {
@@ -306,13 +319,21 @@ impl MermaidManager {
             .blocks
             .iter()
             .find(|state| state.block.whole_range == source_range)?;
-        let image_uri = |asset_key: &str| {
-            format!(
-                "{URI_PREFIX}{asset_key}.png?w={}&z={}",
-                viewport_width.clamp(1, 1_280),
-                zoom_percent.clamp(50, 250),
-            )
+        let image_uri = |asset_key: &str| format!("{URI_PREFIX}{asset_key}.png");
+        let asset_key = match &state.status {
+            RenderStatus::Ready { asset_key } => Some(asset_key.as_str()),
+            RenderStatus::Loading { last_good } | RenderStatus::Error { last_good, .. } => {
+                last_good.as_deref()
+            }
         };
+        let display_width = asset_key
+            .and_then(|key| self.asset_widths.get(key))
+            .map(|width| {
+                (width * zoom_percent.clamp(50, 250) as f32 / 100.0)
+                    .ceil()
+                    .clamp(1.0, viewport_width.clamp(1, MAX_RASTER_WIDTH) as f32)
+                    as u32
+            });
         let status = match &state.status {
             RenderStatus::Ready { asset_key } => MermaidPreviewStatus::Ready {
                 image_uri: image_uri(asset_key),
@@ -338,9 +359,16 @@ impl MermaidManager {
             index: state.block.index,
             diagram_label: state.block.diagram_label.clone(),
             experimental: state.block.support == SupportLevel::Experimental,
+            display_width,
             status,
         })
     }
+}
+
+fn svg_intrinsic_width(svg: &[u8]) -> Option<f32> {
+    let tree = resvg::usvg::Tree::from_data(svg, &resvg::usvg::Options::default()).ok()?;
+    let width = tree.size().width();
+    width.is_finite().then_some(width.max(1.0))
 }
 
 pub fn discover_blocks(markdown_source: &str) -> Vec<MermaidBlock> {
@@ -1207,6 +1235,45 @@ mod tests {
             )
             .is_none());
         assert!(manager.needs_result(&second_job.source_key));
+    }
+
+    #[test]
+    fn document_zoom_reuses_the_same_mermaid_image_resource() {
+        let source = "```mermaid\nflowchart LR\nA-->B\n```";
+        let mut manager = MermaidManager::new();
+        let job = manager.refresh(source, EDIT_TIMEOUT).remove(0);
+        assert!(manager
+            .apply_result(
+                &job.source_key,
+                Ok(
+                    r#"<svg xmlns="http://www.w3.org/2000/svg" width="300" height="120"></svg>"#
+                        .to_owned()
+                ),
+            )
+            .is_some());
+        let range = discover_blocks(source)[0].whole_range.clone();
+
+        let preview_at_100 = manager.preview_for_block(range.clone(), 900, 100).unwrap();
+        assert_eq!(preview_at_100.display_width, Some(300));
+        let uri_at_100 = match preview_at_100.status {
+            MermaidPreviewStatus::Ready { image_uri } => image_uri,
+            status => panic!("expected ready preview, got {status:?}"),
+        };
+        let preview_at_200 = manager.preview_for_block(range.clone(), 900, 200).unwrap();
+        assert_eq!(preview_at_200.display_width, Some(600));
+        let uri_at_200 = match preview_at_200.status {
+            MermaidPreviewStatus::Ready { image_uri } => image_uri,
+            status => panic!("expected ready preview, got {status:?}"),
+        };
+
+        assert_eq!(uri_at_100, uri_at_200);
+        assert_eq!(
+            manager
+                .preview_for_block(range, 500, 250)
+                .unwrap()
+                .display_width,
+            Some(500)
+        );
     }
 
     #[test]
