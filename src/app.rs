@@ -8,7 +8,7 @@ use gpui::{
     Subscription, WeakEntity, Window,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::input::{Input, InputEvent, InputState, Position};
+use gpui_component::input::{Escape, Input, InputEvent, InputState, Position};
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::resizable::{h_resizable, resizable_panel, ResizableState};
 use gpui_component::scroll::ScrollableElement as _;
@@ -272,11 +272,7 @@ impl NativeMarkdownApp {
                 .line_number(true)
                 .default_value(document.content.clone())
         });
-        let search_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Find in document")
-                .clean_on_escape()
-        });
+        let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in document"));
         let file_tree_focus = cx.focus_handle().tab_stop(true);
         #[cfg(not(test))]
         let layout = LayoutSettings::load();
@@ -1022,6 +1018,11 @@ impl NativeMarkdownApp {
         cx.notify();
     }
 
+    fn close_search(&mut self, cx: &mut Context<Self>) {
+        self.search_open = false;
+        cx.notify();
+    }
+
     fn next_hit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.search_hits.is_empty() {
             self.active_hit = (self.active_hit + 1) % self.search_hits.len();
@@ -1355,10 +1356,7 @@ impl NativeMarkdownApp {
                     .label("Close")
                     .small()
                     .ghost()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.search_open = false;
-                        cx.notify();
-                    })),
+                    .on_click(cx.listener(|this, _, _, cx| this.close_search(cx))),
             )
     }
 
@@ -2180,6 +2178,11 @@ impl Render for NativeMarkdownApp {
             .on_action(cx.listener(Self::on_save))
             .on_action(cx.listener(Self::on_save_as))
             .on_action(cx.listener(Self::on_find))
+            .on_action(cx.listener(|this, _: &Escape, _, cx| {
+                if this.search_open {
+                    this.close_search(cx);
+                }
+            }))
             .on_action(cx.listener(Self::on_toggle_preview))
             .on_action(
                 cx.listener(|this, _: &ShowPreview, _, cx| {
@@ -2291,6 +2294,37 @@ fn byte_offset_position(source: &str, offset: usize) -> Position {
 mod tests {
     use super::*;
     use gpui::{size, TestAppContext};
+
+    #[gpui::test]
+    fn escape_closes_search_and_preserves_the_query(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let image_root = DocumentImageRoot::default();
+        let mut app = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| NativeMarkdownApp::new(None, image_root, window, cx));
+            app = Some(view.clone());
+            gpui_component::Root::new(view, window, cx)
+        });
+        let app = app.unwrap();
+
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.search_input.update(cx, |input, cx| {
+                    input.set_value("needle", window, cx);
+                });
+                app.show_search(window, cx);
+            });
+            let _ = window.draw(cx);
+        });
+
+        cx.simulate_keystrokes("escape");
+
+        app.read_with(cx, |app, cx| {
+            assert!(!app.search_open);
+            assert_eq!(app.search_query, "needle");
+            assert_eq!(app.search_input.read(cx).value().as_ref(), "needle");
+        });
+    }
 
     #[gpui::test]
     fn unsaved_document_action_does_not_block_gpui_tasks(cx: &mut TestAppContext) {
