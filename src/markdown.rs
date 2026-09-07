@@ -19,7 +19,9 @@ pub struct Section {
 pub struct SearchHit {
     pub section_index: usize,
     pub snippet: String,
+    pub match_range: Range<usize>,
     pub source_offset: Option<usize>,
+    pub source_end: usize,
 }
 
 pub fn parser_options() -> Options {
@@ -146,105 +148,120 @@ pub fn reading_minutes(words: usize) -> usize {
 }
 
 pub fn search(markdown: &str, query: &str, headings: &[Heading]) -> Vec<SearchHit> {
-    let query = query.trim().to_lowercase();
-    if query.is_empty() {
-        return Vec::new();
-    }
-
     let mut hits = Vec::new();
-    for (section_index, section) in sections(markdown, headings).iter().enumerate() {
-        let section_source = &markdown[section.range.clone()];
-        let lowercase = plain_text_with_mermaid(section_source, false).to_lowercase();
-        for (offset, _) in lowercase.match_indices(&query) {
-            let start = lowercase[..offset]
-                .char_indices()
-                .rev()
-                .nth(24)
-                .map_or(0, |(index, _)| index);
-            let tail = (offset + query.len()).min(lowercase.len());
-            let end = lowercase[tail..]
-                .char_indices()
-                .nth(36)
-                .map_or(lowercase.len(), |(index, _)| tail + index);
-            let snippet = lowercase[start..end]
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ");
-            hits.push(SearchHit {
-                section_index,
-                snippet,
-                source_offset: None,
-            });
-        }
-
-        for range in mermaid_body_ranges(section_source) {
-            let body = &section_source[range.clone()];
-            let (lowercase, source_offsets) = lowercase_with_source_offsets(body);
-            for (offset, _) in lowercase.match_indices(&query) {
-                let start = lowercase[..offset]
-                    .char_indices()
-                    .rev()
-                    .nth(24)
-                    .map_or(0, |(index, _)| index);
-                let tail = (offset + query.len()).min(lowercase.len());
-                let end = lowercase[tail..]
-                    .char_indices()
-                    .nth(36)
-                    .map_or(lowercase.len(), |(index, _)| tail + index);
+    if query.trim().is_empty() {
+        return hits;
+    }
+    let sections = sections(markdown, headings);
+    let mut text = String::new();
+    let mut positions: Vec<Range<usize>> = Vec::new();
+    let mut image_depth = 0;
+    let flush =
+        |text: &mut String, positions: &mut Vec<Range<usize>>, hits: &mut Vec<SearchHit>| {
+            for range in gpui_component::text::search_ranges(text, query) {
+                let offset = positions[range.start].start;
+                let source_end = positions[range.end - 1].end;
+                let (snippet, match_range) = search_snippet(text, range.start, range.len());
+                let section_index = sections
+                    .iter()
+                    .position(|s| s.range.contains(&offset))
+                    .unwrap_or(0);
                 hits.push(SearchHit {
                     section_index,
-                    snippet: lowercase[start..end]
-                        .split_whitespace()
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                    source_offset: Some(section.range.start + range.start + source_offsets[offset]),
+                    snippet,
+                    match_range,
+                    source_offset: Some(offset),
+                    source_end,
                 });
             }
-        }
-    }
-    hits
-}
-
-fn lowercase_with_source_offsets(source: &str) -> (String, Vec<usize>) {
-    let mut lowercase = String::new();
-    let mut source_offsets = Vec::new();
-    for (source_offset, character) in source.char_indices() {
-        for folded in character.to_lowercase() {
-            lowercase.push(folded);
-            source_offsets.extend(std::iter::repeat_n(source_offset, folded.len_utf8()));
-        }
-    }
-    source_offsets.push(source.len());
-    (lowercase, source_offsets)
-}
-
-fn mermaid_body_ranges(markdown: &str) -> Vec<Range<usize>> {
-    let mut ranges = Vec::new();
-    let mut in_mermaid = false;
-    let mut body_start = None;
-    let mut body_end = 0;
-    for (event, range) in Parser::new_ext(markdown, parser_options()).into_offset_iter() {
+            text.clear();
+            positions.clear();
+        };
+    for (event, source_range) in Parser::new_ext(markdown, parser_options()).into_offset_iter() {
         match event {
-            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info)))
-                if info.trim().eq_ignore_ascii_case("mermaid") =>
-            {
-                in_mermaid = true;
-                body_start = None;
-                body_end = 0;
+            Event::Start(Tag::Image { .. }) => {
+                flush(&mut text, &mut positions, &mut hits);
+                image_depth += 1;
             }
-            Event::Text(_) if in_mermaid => {
-                body_start.get_or_insert(range.start);
-                body_end = range.end;
+            Event::End(TagEnd::Image) => {
+                image_depth -= 1;
             }
-            Event::End(TagEnd::CodeBlock) if in_mermaid => {
-                in_mermaid = false;
-                let start = body_start.take().unwrap_or(range.start);
-                ranges.push(start..body_end.max(start));
+            Event::Text(value) | Event::Code(value) if image_depth == 0 => {
+                let source = &markdown[source_range.clone()];
+                if source.starts_with('&') && source.ends_with(';') && value.as_ref() != source {
+                    positions.extend(std::iter::repeat_n(source_range, value.len()));
+                    text.push_str(&value);
+                    continue;
+                }
+                let mut cursor = 0;
+                for ch in value.chars() {
+                    // Parser offsets keep hidden link URLs and Markdown delimiters out of navigation.
+                    let local = source[cursor..]
+                        .find(ch)
+                        .map(|n| cursor + n)
+                        .unwrap_or(cursor);
+                    let end = (local + ch.len_utf8()).min(source.len());
+                    positions.extend(std::iter::repeat_n(
+                        source_range.start + local..source_range.start + end,
+                        ch.len_utf8(),
+                    ));
+                    text.push(ch);
+                    cursor = end;
+                    while !source.is_char_boundary(cursor) {
+                        cursor += 1;
+                    }
+                }
             }
+            Event::SoftBreak | Event::HardBreak if image_depth == 0 => {
+                text.push('\n');
+                positions.push(source_range);
+            }
+            Event::End(
+                TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::TableCell | TagEnd::CodeBlock,
+            ) => flush(&mut text, &mut positions, &mut hits),
             _ => {}
         }
     }
-    ranges
+    flush(&mut text, &mut positions, &mut hits);
+    hits
+}
+
+fn search_snippet(text: &str, offset: usize, match_len: usize) -> (String, Range<usize>) {
+    let start = text[..offset]
+        .char_indices()
+        .rev()
+        .nth(24)
+        .map_or(0, |(index, _)| index);
+    let tail = (offset + match_len).min(text.len());
+    let end = text[tail..]
+        .char_indices()
+        .nth(36)
+        .map_or(text.len(), |(index, _)| tail + index);
+    let prefix = normalize_whitespace(&text[start..offset]);
+    let matched = normalize_whitespace(&text[offset..tail]);
+    let suffix = normalize_whitespace(&text[tail..end]);
+    let prefix_separator = (!prefix.is_empty()
+        && text[..offset]
+            .chars()
+            .next_back()
+            .is_some_and(char::is_whitespace)) as usize;
+    let suffix_separator = (!suffix.is_empty()
+        && text[tail..].chars().next().is_some_and(char::is_whitespace))
+        as usize;
+    let match_start = prefix.len() + prefix_separator;
+    let match_end = match_start + matched.len();
+    (
+        format!(
+            "{prefix}{}{matched}{}{suffix}",
+            " ".repeat(prefix_separator),
+            " ".repeat(suffix_separator)
+        ),
+        match_start..match_end,
+    )
+}
+
+fn normalize_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn heading_level(level: HeadingLevel) -> u8 {
@@ -282,6 +299,56 @@ mod tests {
         let hits = search(source, "needle", &outline);
         assert_eq!(hits.len(), 2);
         assert_ne!(hits[0].section_index, hits[1].section_index);
+    }
+
+    #[test]
+    fn search_preserves_snippet_casing_and_marks_the_match_range() {
+        let source = "# Notes\nThe OpenAI API is ready.";
+        let outline = headings(source);
+        let hits = search(source, "api", &outline);
+
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].snippet.contains("OpenAI API"));
+        assert_eq!(&hits[0].snippet[hits[0].match_range.clone()], "API");
+        assert_eq!(&source[hits[0].source_offset.unwrap()..][..3], "API");
+    }
+
+    #[test]
+    fn search_maps_visible_unicode_and_formatted_text_to_source() {
+        let source = "# Test\n\n[link](https://needle.example) **Ne**edle, İSTANBUL, 中文匹配.\n\n```mermaid\nflowchart LR\nneedle-->B\n```\n\nLast Needle.";
+        let outline = headings(source);
+        let hits = search(source, "needle", &outline);
+        assert_eq!(hits.len(), 3);
+        assert_eq!(
+            &source[hits[0].source_offset.unwrap()..hits[0].source_end],
+            "Ne**edle"
+        );
+        assert_eq!(
+            &source[hits[1].source_offset.unwrap()..hits[1].source_end],
+            "needle"
+        );
+        assert_eq!(
+            &source[hits[2].source_offset.unwrap()..hits[2].source_end],
+            "Needle"
+        );
+        for query in ["i", "stanbul", "中文", "匹配"] {
+            for hit in search(source, query, &outline) {
+                assert!(source.is_char_boundary(hit.source_offset.unwrap()));
+                assert!(source.is_char_boundary(hit.source_end));
+                assert!(!hit.snippet[hit.match_range].is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn search_points_to_the_complete_encoded_entity() {
+        let source = "# Entities\n\nA &amp; B.";
+        let hits = search(source, "&", &headings(source));
+        assert_eq!(hits.len(), 1);
+        assert_eq!(
+            &source[hits[0].source_offset.unwrap()..hits[0].source_end],
+            "&amp;"
+        );
     }
 
     #[test]

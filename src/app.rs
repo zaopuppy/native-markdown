@@ -1,3 +1,4 @@
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -14,7 +15,7 @@ use gpui_component::input::{Escape, Input, InputEvent, InputState, Position};
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::resizable::{h_resizable, resizable_panel, ResizableState};
 use gpui_component::scroll::ScrollableElement as _;
-use gpui_component::text::{TextView, TextViewStyle};
+use gpui_component::text::{SearchHandle, TextView, TextViewStyle};
 use gpui_component::tooltip::Tooltip;
 #[cfg(test)]
 use gpui_component::Theme;
@@ -71,6 +72,44 @@ fn document_text_view_style(factor: f32) -> TextViewStyle {
     style
 }
 
+fn highlighted_search_snippet(
+    snippet: &str,
+    match_range: Range<usize>,
+    active: bool,
+    query: &str,
+) -> AnyElement {
+    let highlights = gpui_component::text::search_ranges(snippet, query)
+        .into_iter()
+        .map(|range| {
+            let selected = active && range == match_range;
+            (
+                range,
+                gpui::HighlightStyle {
+                    background_color: Some(
+                        if selected {
+                            rgb(0x3730a3)
+                        } else {
+                            rgb(0xffc857)
+                        }
+                        .into(),
+                    ),
+                    color: Some(
+                        if selected {
+                            rgb(0xffffff)
+                        } else {
+                            rgb(0x211a0e)
+                        }
+                        .into(),
+                    ),
+                    font_weight: Some(gpui::FontWeight::SEMIBOLD),
+                    ..Default::default()
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    gpui_component::text::SearchText::new(snippet.to_owned(), highlights).into_any_element()
+}
+
 actions!(
     native_markdown,
     [
@@ -79,6 +118,8 @@ actions!(
         SaveDocument,
         SaveDocumentAs,
         FindDocument,
+        NextSearchHit,
+        PreviousSearchHit,
         TogglePreview,
         ShowPreview,
         ShowSplit,
@@ -98,6 +139,12 @@ actions!(
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
+        KeyBinding::new("enter", NextSearchHit, Some("NativeMarkdownSearch")),
+        KeyBinding::new(
+            "shift-enter",
+            PreviousSearchHit,
+            Some("NativeMarkdownSearch"),
+        ),
         KeyBinding::new("ctrl-n", NewDocument, Some(APP_CONTEXT)),
         KeyBinding::new("ctrl-o", OpenDocument, Some(APP_CONTEXT)),
         KeyBinding::new("ctrl-s", SaveDocument, Some(APP_CONTEXT)),
@@ -168,6 +215,11 @@ pub struct NativeMarkdownApp {
     search_hits: Vec<SearchHit>,
     search_query: String,
     active_hit: usize,
+    active_search_offset: Option<usize>,
+    search_request: u64,
+    preview_search: SearchHandle,
+    source_search: SearchHandle,
+    app_focus: FocusHandle,
     view_mode: ViewMode,
     file_tree: FileTree,
     file_tree_focus: FocusHandle,
@@ -309,6 +361,9 @@ impl NativeMarkdownApp {
                 |this: &mut Self, editor, event: &InputEvent, window, cx| {
                     if matches!(event, InputEvent::Change) {
                         this.document.content = editor.read(cx).value().to_string();
+                        editor.update(cx, |editor, cx| {
+                            editor.set_search_match(None, 0, SearchHandle::default(), cx)
+                        });
                         this.close_image_viewer(window, cx);
                         this.refresh_analysis();
                         this.refresh_mermaid(mermaid::EDIT_TIMEOUT, window, cx);
@@ -322,12 +377,21 @@ impl NativeMarkdownApp {
             cx.subscribe_in(
                 &search_input,
                 window,
-                |this: &mut Self, input, event: &InputEvent, _, cx| {
-                    if matches!(event, InputEvent::Change) {
+                |this: &mut Self, input, event: &InputEvent, _window, cx| match event {
+                    InputEvent::Change => {
                         this.search_query = input.read(cx).value().to_string();
+                        this.active_hit = 0;
+                        this.active_search_offset = None;
+                        this.preview_search.clear();
+                        this.source_search.clear();
+                        this.editor.update(cx, |editor, cx| {
+                            editor.set_search_match(None, 0, SearchHandle::default(), cx)
+                        });
                         this.refresh_search();
                         cx.notify();
                     }
+                    InputEvent::PressEnter { .. } => {}
+                    InputEvent::Focus | InputEvent::Blur => {}
                 },
             ),
             cx.observe_window_activation(window, |this: &mut Self, window, cx| {
@@ -368,6 +432,11 @@ impl NativeMarkdownApp {
             search_hits: Vec::new(),
             search_query: String::new(),
             active_hit: 0,
+            active_search_offset: None,
+            search_request: 0,
+            preview_search: SearchHandle::default(),
+            source_search: SearchHandle::default(),
+            app_focus: cx.focus_handle(),
             view_mode: ViewMode::Preview,
             file_tree: FileTree::new(tree_root),
             file_tree_focus,
@@ -416,6 +485,10 @@ impl NativeMarkdownApp {
     }
 
     fn refresh_analysis(&mut self) {
+        self.active_search_offset = None;
+        self.active_hit = 0;
+        self.preview_search.clear();
+        self.source_search.clear();
         self.preview_markdown = SharedString::from(self.document.content.clone());
         self.outline = markdown::headings(&self.document.content);
         self.word_count = markdown::word_count(&self.document.content);
@@ -1028,14 +1101,17 @@ impl NativeMarkdownApp {
         cx.notify();
     }
 
-    fn close_search(&mut self, cx: &mut Context<Self>) {
+    fn close_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search_open = false;
+        self.app_focus.focus(window);
         cx.notify();
     }
 
     fn next_hit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.search_hits.is_empty() {
-            self.active_hit = (self.active_hit + 1) % self.search_hits.len();
+            if self.active_search_offset.is_some() {
+                self.active_hit = (self.active_hit + 1) % self.search_hits.len();
+            }
             self.activate_search_hit(window, cx);
         }
     }
@@ -1051,24 +1127,23 @@ impl NativeMarkdownApp {
         }
     }
 
-    fn activate_search_hit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn activate_search_hit(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(hit) = self.search_hits.get(self.active_hit) else {
             return;
         };
-        if let Some(offset) = hit.source_offset {
-            let position = byte_offset_position(&self.document.content, offset);
-            self.view_mode = ViewMode::Split;
+        self.active_search_offset = hit.source_offset;
+        self.search_request = self.search_request.wrapping_add(1);
+        self.preview_search.clear();
+        self.source_search.clear();
+        let range = hit.source_offset.map(|start| start..hit.source_end);
+        self.editor.update(cx, |editor, cx| {
+            editor.set_search_match(range, self.search_request, self.source_search.clone(), cx)
+        });
+        if self.view_mode != ViewMode::Source {
             self.focused_section = None;
-            self.selected_heading = None;
-            self.editor.update(cx, |editor, cx| {
-                editor.set_cursor_position(position, window, cx)
-            });
-        } else {
-            self.focused_section = Some(hit.section_index);
             self.selected_heading = markdown::sections(&self.document.content, &self.outline)
                 .get(hit.section_index)
                 .and_then(|section| section.heading_index);
-            self.view_mode = ViewMode::Preview;
         }
         cx.notify();
     }
@@ -1115,6 +1190,18 @@ impl NativeMarkdownApp {
 
     fn set_view_mode(&mut self, mode: ViewMode, cx: &mut Context<Self>) {
         self.view_mode = mode;
+        if self.active_search_offset.is_some() {
+            self.search_request = self.search_request.wrapping_add(1);
+            self.preview_search.clear();
+            self.source_search.clear();
+            let range = self
+                .search_hits
+                .get(self.active_hit)
+                .and_then(|hit| hit.source_offset.map(|start| start..hit.source_end));
+            self.editor.update(cx, |editor, cx| {
+                editor.set_search_match(range, self.search_request, self.source_search.clone(), cx)
+            });
+        }
         cx.notify();
     }
 
@@ -1321,49 +1408,101 @@ impl NativeMarkdownApp {
     fn search_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self.search_hits.len();
         let current = if count == 0 { 0 } else { self.active_hit + 1 };
-        let snippet = self
-            .search_hits
-            .get(self.active_hit)
-            .map(|hit| hit.snippet.clone())
-            .unwrap_or_default();
-        div()
-            .h_flex()
+        let mut bar = div()
+            .debug_selector(|| "search-bar".into())
+            .v_flex()
+            .w_full()
             .flex_none()
-            .gap_2()
             .px_4()
             .py_2()
             .border_b_1()
             .border_color(rgb(0xd3c8b5))
-            .bg(rgb(0xebe3d4))
-            .child(div().w(px(320.0)).child(Input::new(&self.search_input)))
-            .child(format!("{current} / {count}"))
-            .child(
+            .gap_2()
+            .bg(rgb(0xebe3d4));
+        bar = bar.child(
+            div()
+                .h_flex()
+                .gap_2()
+                .items_center()
+                .child(div().w(px(320.0)).child(Input::new(&self.search_input)))
+                .child(
+                    div()
+                        .px_2()
+                        .py_1()
+                        .rounded_sm()
+                        .bg(rgb(0xded4c2))
+                        .font_semibold()
+                        .text_color(rgb(0x40382e))
+                        .child(if count == 0 {
+                            "No matches".to_owned()
+                        } else {
+                            format!("{current} of {count}")
+                        }),
+                )
+                .child(
+                    Button::new("previous-hit")
+                        .label("Previous  ⇧↵")
+                        .small()
+                        .on_click(cx.listener(|this, _, window, cx| this.previous_hit(window, cx))),
+                )
+                .child(
+                    Button::new("next-hit")
+                        .label("Next  ↵")
+                        .small()
+                        .on_click(cx.listener(|this, _, window, cx| this.next_hit(window, cx))),
+                )
+                .child(div().flex_1())
+                .child(
+                    Button::new("close-search")
+                        .label("Close")
+                        .small()
+                        .ghost()
+                        .on_click(cx.listener(|this, _, window, cx| this.close_search(window, cx))),
+                ),
+        );
+        let start = self.active_hit.saturating_sub(2);
+        for index in start..(start + 5).min(count) {
+            let hit = self.search_hits[index].clone();
+            let selected = index == self.active_hit;
+            bar = bar.child(
                 div()
-                    .max_w(px(360.0))
-                    .truncate()
-                    .text_color(rgb(0x665b4d))
-                    .child(snippet),
-            )
-            .child(
-                Button::new("previous-hit")
-                    .label("Previous")
-                    .small()
-                    .on_click(cx.listener(|this, _, window, cx| this.previous_hit(window, cx))),
-            )
-            .child(
-                Button::new("next-hit")
-                    .label("Next")
-                    .small()
-                    .on_click(cx.listener(|this, _, window, cx| this.next_hit(window, cx))),
-            )
-            .child(div().flex_1())
-            .child(
-                Button::new("close-search")
-                    .label("Close")
-                    .small()
-                    .ghost()
-                    .on_click(cx.listener(|this, _, _, cx| this.close_search(cx))),
-            )
+                    .id(("search-result", index))
+                    .debug_selector(move || format!("search-result-{index}"))
+                    .tab_index(0)
+                    .focus(|style| style.border_color(rgb(0x3730a3)).bg(rgb(0xdde0ff)))
+                    .h_flex()
+                    .w_full()
+                    .items_center()
+                    .min_w_0()
+                    .border_1()
+                    .border_l_4()
+                    .border_color(if selected {
+                        rgb(0x3730a3)
+                    } else {
+                        rgb(0xd3c8b5)
+                    })
+                    .pl_2()
+                    .py_1()
+                    .rounded_sm()
+                    .bg(if selected {
+                        rgb(0xe5e7ff)
+                    } else {
+                        rgb(0xfaf7f0)
+                    })
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.active_hit = index;
+                        this.activate_search_hit(window, cx);
+                    }))
+                    .child(highlighted_search_snippet(
+                        &hit.snippet,
+                        hit.match_range,
+                        selected,
+                        &self.search_query,
+                    )),
+            );
+        }
+        bar
     }
 
     fn file_tree_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1935,12 +2074,32 @@ impl NativeMarkdownApp {
         let app = cx.entity().downgrade();
         let image_app = app.clone();
         let (preview_source, preview_source_offset) = self.preview_source();
+        let preview_end = preview_source_offset + preview_source.len();
         let zoom_factor = self.zoom.factor();
         let mut preview = TextView::markdown("native-markdown-preview", preview_source, window, cx)
             .style(document_text_view_style(zoom_factor))
             .text_size(px(BASE_FONT_SIZE * zoom_factor))
             .selectable(true)
             .scrollable(true);
+        if self
+            .active_search_offset
+            .is_some_and(|offset| (preview_source_offset..preview_end).contains(&offset))
+        {
+            let preceding = self
+                .search_hits
+                .iter()
+                .take_while(|hit| {
+                    hit.source_offset
+                        .is_some_and(|offset| offset < preview_source_offset)
+                })
+                .count();
+            preview = preview.search_match(
+                self.search_query.clone(),
+                self.active_hit.saturating_sub(preceding),
+                self.search_request,
+                self.preview_search.clone(),
+            );
+        }
         if self.outline_mode == OutlineMode::Jump {
             if let Some(heading_index) = self.selected_heading {
                 preview = preview.scroll_to_heading_once(heading_index, self.outline_jump_request);
@@ -2271,17 +2430,89 @@ impl Render for NativeMarkdownApp {
             self.document.display_name()
         ));
 
+        if window.focused(cx).is_none() {
+            self.app_focus.focus(window);
+        }
+
         div()
-            .key_context(APP_CONTEXT)
+            .track_focus(&self.app_focus)
+            .capture_action(cx.listener(|this, _: &NextSearchHit, window, cx| {
+                if this.search_open && this.image_viewer.is_none() {
+                    this.next_hit(window, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &PreviousSearchHit, window, cx| {
+                if this.search_open && this.image_viewer.is_none() {
+                    this.previous_hit(window, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(
+                cx.listener(|this, _: &gpui_component::input::Enter, window, cx| {
+                    if this.search_open && this.image_viewer.is_none() {
+                        this.next_hit(window, cx);
+                        cx.stop_propagation();
+                    }
+                }),
+            )
+            .capture_action(cx.listener(|this, _: &FileTreeOpen, window, cx| {
+                if this.search_open && this.image_viewer.is_none() {
+                    this.next_hit(window, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(
+                cx.listener(|this, _: &gpui_component::input::Search, window, cx| {
+                    if this.image_viewer.is_none() {
+                        this.show_search(window, cx);
+                        cx.stop_propagation();
+                    }
+                }),
+            )
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if this.image_viewer.is_some() || this.dialog_in_flight {
+                    return;
+                }
+                let key = &event.keystroke;
+                if key.modifiers.control && !key.modifiers.alt && key.key == "f" {
+                    this.show_search(window, cx);
+                    window.prevent_default();
+                    cx.stop_propagation();
+                } else if this.search_open
+                    && key.key == "enter"
+                    && !key.modifiers.control
+                    && !key.modifiers.alt
+                    && !key.modifiers.platform
+                {
+                    if key.modifiers.shift {
+                        this.previous_hit(window, cx);
+                    } else {
+                        this.next_hit(window, cx);
+                    }
+                    window.prevent_default();
+                    cx.stop_propagation();
+                } else if this.search_open && key.key == "escape" {
+                    this.close_search(window, cx);
+                    this.app_focus.focus(window);
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }
+            }))
+            .key_context(if self.search_open {
+                "NativeMarkdown NativeMarkdownSearch"
+            } else {
+                APP_CONTEXT
+            })
             .on_scroll_wheel(cx.listener(Self::handle_scroll_wheel))
             .on_action(cx.listener(Self::on_new))
             .on_action(cx.listener(Self::on_open))
             .on_action(cx.listener(Self::on_save))
             .on_action(cx.listener(Self::on_save_as))
             .on_action(cx.listener(Self::on_find))
-            .on_action(cx.listener(|this, _: &Escape, _, cx| {
+            .on_action(cx.listener(|this, _: &Escape, window, cx| {
                 if this.search_open {
-                    this.close_search(cx);
+                    this.close_search(window, cx);
                 }
             }))
             .on_action(cx.listener(Self::on_toggle_preview))
@@ -2438,6 +2669,335 @@ mod tests {
         cx.update(|window, cx| {
             let _ = window.draw(cx);
         });
+    }
+
+    #[gpui::test]
+    fn search_shortcuts_work_from_sidebar_and_cycle_in_both_directions(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        cx.update(bind_keys);
+        let mut app = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view =
+                cx.new(|cx| NativeMarkdownApp::new(None, DocumentImageRoot::default(), window, cx));
+            app = Some(view.clone());
+            gpui_component::Root::new(view, window, cx)
+        });
+        let app = app.unwrap();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.document.content = "# Search\n\nFirst Needle.\n\nSecond Needle.".into();
+                app.refresh_analysis();
+                app.file_tree_focus.focus(window);
+                app.show_search(window, cx);
+                app.search_input
+                    .update(cx, |input, cx| input.set_value("needle", window, cx));
+            })
+        });
+        cx.simulate_resize(size(px(1180.0), px(780.0)));
+        draw_app(cx);
+        cx.simulate_keystrokes("enter");
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.active_hit, 0, "first Enter must activate first result")
+        });
+        cx.simulate_keystrokes("shift-enter");
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.active_hit, 1, "Shift+Enter must wrap to last result")
+        });
+        cx.update(|window, cx| app.read(cx).file_tree_focus.focus(window));
+        draw_app(cx);
+        cx.simulate_keystrokes("enter");
+        app.read_with(cx, |app, _| {
+            assert_eq!(
+                app.active_hit, 0,
+                "search navigation must work from sidebar"
+            )
+        });
+        cx.simulate_keystrokes("shift-enter");
+        app.read_with(cx, |app, _| assert_eq!(app.active_hit, 1));
+        cx.simulate_keystrokes("escape");
+        cx.update(|window, cx| app.read(cx).file_tree_focus.focus(window));
+        draw_app(cx);
+        cx.simulate_keystrokes("ctrl-f");
+        app.read_with(cx, |app, _| {
+            assert!(app.search_open, "Ctrl+F must work from the sidebar")
+        });
+    }
+
+    #[gpui::test]
+    fn search_result_previews_use_the_full_search_bar_width(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let mut app = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view =
+                cx.new(|cx| NativeMarkdownApp::new(None, DocumentImageRoot::default(), window, cx));
+            app = Some(view.clone());
+            gpui_component::Root::new(view, window, cx)
+        });
+        let app = app.unwrap();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.document.content = (0..5)
+                    .map(|index| format!("A long result {index} contains Needle and enough surrounding text to preview.\n\n"))
+                    .collect();
+                app.refresh_analysis();
+                app.show_search(window, cx);
+                app.search_input
+                    .update(cx, |input, cx| input.set_value("needle", window, cx));
+            })
+        });
+        cx.simulate_resize(size(px(1180.0), px(780.0)));
+        draw_app(cx);
+
+        let bar = cx.debug_bounds("search-bar").unwrap();
+        let first_result = cx.debug_bounds("search-result-0").unwrap();
+        assert!(
+            first_result.size.width >= bar.size.width - px(34.0),
+            "result preview must fill the search bar's padded content width: bar={bar:?}, result={first_result:?}"
+        );
+    }
+
+    #[gpui::test]
+    fn search_paints_and_centers_occurrences_inside_a_long_paragraph(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        cx.update(bind_keys);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("search.md");
+        let source = format!(
+            "# One heading\n\n{} **Needle** {} `NEEDLE` {}\n\nTail.",
+            "before ".repeat(400),
+            "middle ".repeat(500),
+            "after ".repeat(400)
+        );
+        std::fs::write(&path, &source).unwrap();
+        let mut app = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                NativeMarkdownApp::new(Some(path), DocumentImageRoot::default(), window, cx)
+            });
+            app = Some(view.clone());
+            gpui_component::Root::new(view, window, cx)
+        });
+        let app = app.unwrap();
+        cx.simulate_resize(size(px(1180.0), px(780.0)));
+        draw_app(cx);
+        cx.simulate_keystrokes("ctrl-f");
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.search_input
+                    .update(cx, |input, cx| input.set_value("needle", window, cx));
+            })
+        });
+        draw_app(cx);
+        app.read_with(cx, |app, _| {
+            assert!(
+                !app.preview_search.geometry().painted,
+                "typing must not jump"
+            )
+        });
+        for (key, text) in [
+            ("enter", "Needle"),
+            ("enter", "NEEDLE"),
+            ("shift-enter", "Needle"),
+        ] {
+            cx.simulate_keystrokes(key);
+            draw_app(cx);
+            draw_app(cx);
+            app.read_with(cx, |app, _| {
+                let geometry = app.preview_search.geometry();
+                assert!(
+                    geometry.painted,
+                    "expected actual visible marker: {geometry:?}"
+                );
+                assert_eq!(geometry.text.as_ref(), text);
+                let bounds = geometry.bounds.unwrap();
+                let viewport = geometry.viewport.unwrap();
+                assert!(
+                    (bounds.center().y - viewport.center().y).abs() < px(4.),
+                    "target line must be centered: {geometry:?}"
+                );
+                assert_eq!(
+                    app.preview_source().0.as_ref(),
+                    source,
+                    "search must not rewrite Markdown"
+                );
+            });
+        }
+        cx.simulate_keystrokes("escape");
+        draw_app(cx);
+        app.read_with(cx, |app, _| {
+            assert!(
+                app.preview_search.geometry().painted,
+                "marker persists after closing search"
+            )
+        });
+        cx.simulate_keystrokes("ctrl-f");
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.search_input
+                    .update(cx, |input, cx| input.set_value("absent", window, cx))
+            })
+        });
+        draw_app(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.search_hits.is_empty());
+            assert!(!app.preview_search.geometry().painted);
+        });
+    }
+
+    #[gpui::test]
+    fn search_overrides_inline_code_background(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        cx.update(bind_keys);
+        let mut app = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view =
+                cx.new(|cx| NativeMarkdownApp::new(None, DocumentImageRoot::default(), window, cx));
+            app = Some(view.clone());
+            gpui_component::Root::new(view, window, cx)
+        });
+        let app = app.unwrap();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.document.content = "`actor.mojom` 不负责理解用户究竟想做什么，而是位于计划生成之后、网页动作实际执行之前：".into();
+                app.refresh_analysis();
+                app.show_search(window, cx);
+                app.search_input
+                    .update(cx, |input, cx| input.set_value("actor", window, cx));
+            })
+        });
+        cx.simulate_resize(size(px(1180.0), px(780.0)));
+        draw_app(cx);
+        cx.simulate_keystrokes("enter");
+        draw_app(cx);
+        draw_app(cx);
+
+        app.read_with(cx, |app, _| {
+            let geometry = app.preview_search.geometry();
+            assert_eq!(geometry.text.as_ref(), "actor");
+            assert_eq!(
+                geometry.background_color,
+                Some(rgb(0x3730a3).into()),
+                "active search must replace the inline-code background: {geometry:?}"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn search_keeps_focus_and_centers_source_after_switching_modes(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        cx.update(bind_keys);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("source-search.md");
+        let source = format!(
+            "# Source\n\n{}Target Needle on this line.\n\n{}",
+            "Filler line.\n\n".repeat(80),
+            "Trailing line.\n\n".repeat(80)
+        );
+        std::fs::write(&path, &source).unwrap();
+        let mut app = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                NativeMarkdownApp::new(Some(path), DocumentImageRoot::default(), window, cx)
+            });
+            app = Some(view.clone());
+            gpui_component::Root::new(view, window, cx)
+        });
+        let app = app.unwrap();
+        cx.simulate_resize(size(px(1180.0), px(780.0)));
+        draw_app(cx);
+        cx.simulate_keystrokes("ctrl-f");
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.search_input
+                    .update(cx, |input, cx| input.set_value("needle", window, cx))
+            })
+        });
+        draw_app(cx);
+        cx.simulate_keystrokes("enter");
+        draw_app(cx);
+        app.update(cx, |app, cx| app.set_view_mode(ViewMode::Split, cx));
+        for _ in 0..4 {
+            draw_app(cx);
+        }
+        app.read_with(cx, |app, _| {
+            let geometry = app.source_search.geometry();
+            assert!(
+                geometry.painted,
+                "Source marker must be visible: {geometry:?}"
+            );
+            assert_eq!(geometry.text.as_ref(), "Needle");
+            assert!(
+                (geometry.bounds.unwrap().center().y - geometry.viewport.unwrap().center().y).abs()
+                    < px(4.),
+                "Source target must be centered: {geometry:?}"
+            );
+            assert_eq!(app.document.content, source);
+        });
+        cx.update(|window, cx| {
+            assert!(
+                app.read(cx)
+                    .search_input
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window),
+                "activating Source must not steal search input focus"
+            );
+        });
+        cx.simulate_keystrokes("escape");
+        cx.update(|window, cx| app.read(cx).editor.read(cx).focus_handle(cx).focus(window));
+        draw_app(cx);
+        cx.simulate_keystrokes("ctrl-f");
+        app.read_with(cx, |app, _| {
+            assert!(
+                app.search_open,
+                "editor's internal find must not swallow app Ctrl+F"
+            )
+        });
+    }
+
+    #[gpui::test]
+    fn search_visits_code_tables_lists_and_chinese_in_render_order(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        cx.update(bind_keys);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mixed-search.md");
+        let source = "# Matches\n\n- A **目标** in a list\n\n| Column |\n| --- |\n| 目标 |\n\n```rust\n// 目标\n```\n\n```mermaid\nflowchart LR\n目标-->B\n```\n\nLast 目标.";
+        std::fs::write(&path, source).unwrap();
+        let mut app = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                NativeMarkdownApp::new(Some(path), DocumentImageRoot::default(), window, cx)
+            });
+            app = Some(view.clone());
+            gpui_component::Root::new(view, window, cx)
+        });
+        let app = app.unwrap();
+        cx.simulate_resize(size(px(1180.0), px(780.0)));
+        draw_app(cx);
+        cx.simulate_keystrokes("ctrl-f");
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.search_input
+                    .update(cx, |input, cx| input.set_value("目标", window, cx))
+            })
+        });
+        draw_app(cx);
+        app.read_with(cx, |app, _| assert_eq!(app.search_hits.len(), 5));
+        for expected in 0..5 {
+            cx.simulate_keystrokes("enter");
+            draw_app(cx);
+            draw_app(cx);
+            app.read_with(cx, |app, _| {
+                let geometry = app.preview_search.geometry();
+                assert_eq!(app.active_hit, expected);
+                assert!(
+                    geometry.painted,
+                    "missing marker for result {expected}: {geometry:?}"
+                );
+                assert_eq!(geometry.text.as_ref(), "目标");
+                assert_eq!(app.preview_source().0.as_ref(), source);
+            });
+        }
     }
 
     #[gpui::test]
