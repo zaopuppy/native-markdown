@@ -231,6 +231,7 @@ pub struct NativeMarkdownApp {
     file_tree_narrow_reveal: bool,
     outline_narrow_reveal: bool,
     workspace_resizable: Entity<ResizableState>,
+    workspace_panel_visibility: Option<(bool, bool)>,
     search_open: bool,
     preview_markdown: SharedString,
     focused_section: Option<usize>,
@@ -448,6 +449,7 @@ impl NativeMarkdownApp {
             file_tree_narrow_reveal: false,
             outline_narrow_reveal: false,
             workspace_resizable,
+            workspace_panel_visibility: None,
             search_open: false,
             preview_markdown,
             focused_section: None,
@@ -2275,17 +2277,55 @@ impl NativeMarkdownApp {
         let width: f32 = window.viewport_size().width.into();
         let (regular_tree, regular_outline, overlay_tree, overlay_outline) =
             self.responsive_panel_visibility(width);
+        let visibility = (regular_tree, regular_outline);
+        if self.workspace_panel_visibility != Some(visibility) {
+            // ResizableState tracks sizes by index. Hidden children retain their old
+            // geometry, so rebuild the state when the visible panel set changes.
+            self.workspace_resizable = cx.new(|_| ResizableState::default());
+            self.workspace_panel_visibility = Some(visibility);
+        }
+        let mut panels = Vec::new();
+        if regular_tree {
+            panels.push(
+                resizable_panel()
+                    .size(px(self.file_tree_width))
+                    .size_range(px(120.0)..px(520.0))
+                    .child(self.file_tree_panel(cx)),
+            );
+        }
+        panels.push(
+            resizable_panel()
+                .size_range(px(420.0)..px(10_000.0))
+                .child(content),
+        );
+        if regular_outline {
+            panels.push(
+                resizable_panel()
+                    .size(px(self.outline_width))
+                    .size_range(px(120.0)..px(520.0))
+                    .child(self.outline_panel(cx)),
+            );
+        }
+        let panel_count = panels.len();
         let app = cx.entity().downgrade();
         let resizable = h_resizable("document-workspace-panels")
             .with_state(&self.workspace_resizable)
             .on_resize(move |state, _, cx| {
                 let sizes = state.read(cx).sizes().clone();
-                if sizes.len() != 3 {
+                if sizes.len() != panel_count {
                     return;
                 }
-                let file_tree_width: f32 = sizes[0].into();
-                let outline_width: f32 = sizes[2].into();
                 app.update(cx, |app, _| {
+                    let file_tree_width = if regular_tree {
+                        sizes[0].into()
+                    } else {
+                        app.file_tree_width
+                    };
+                    let outline_width = if regular_outline {
+                        sizes[panel_count - 1].into()
+                    } else {
+                        app.outline_width
+                    };
                     let mut settings = LayoutSettings {
                         file_tree_open: app.file_tree_open,
                         outline_open: app.outline_open,
@@ -2299,25 +2339,7 @@ impl NativeMarkdownApp {
                 })
                 .ok();
             })
-            .child(
-                resizable_panel()
-                    .visible(regular_tree)
-                    .size(px(self.file_tree_width))
-                    .size_range(px(120.0)..px(520.0))
-                    .child(self.file_tree_panel(cx)),
-            )
-            .child(
-                resizable_panel()
-                    .size_range(px(420.0)..px(10_000.0))
-                    .child(content),
-            )
-            .child(
-                resizable_panel()
-                    .visible(regular_outline)
-                    .size(px(self.outline_width))
-                    .size_range(px(120.0)..px(520.0))
-                    .child(self.outline_panel(cx)),
-            );
+            .children(panels);
 
         div()
             .debug_selector(|| "document-workspace".into())
@@ -2669,6 +2691,59 @@ mod tests {
         cx.update(|window, cx| {
             let _ = window.draw(cx);
         });
+    }
+
+    #[gpui::test]
+    fn outline_divider_tracks_mouse_after_navigation_toggle(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let mut app = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view =
+                cx.new(|cx| NativeMarkdownApp::new(None, DocumentImageRoot::default(), window, cx));
+            app = Some(view.clone());
+            gpui_component::Root::new(view, window, cx)
+        });
+        let app = app.unwrap();
+        cx.simulate_resize(size(px(1180.0), px(780.0)));
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.document.content = "# Heading\n\nPreview content.".into();
+                app.refresh_analysis();
+                app.file_tree_open = false;
+                app.outline_open = true;
+                app.file_tree_width = 280.0;
+                app.outline_width = 270.0;
+                cx.notify();
+            })
+        });
+        draw_app(cx);
+        for open in [true, false] {
+            cx.update(|_, cx| {
+                app.update(cx, |app, cx| {
+                    app.file_tree_open = open;
+                    cx.notify();
+                })
+            });
+            draw_app(cx);
+        }
+        let outline = cx.debug_bounds("outline-panel").unwrap();
+        // Debug bounds exclude the outline's 12px padding and 1px left border.
+        let start = point(outline.left() - px(13.0), outline.center().y);
+        cx.simulate_mouse_down(start, gpui::MouseButton::Left, Modifiers::default());
+        for (step, delta) in [-10.0, -30.0, -50.0, 20.0].into_iter().enumerate() {
+            let target = point(start.x + px(delta), start.y);
+            cx.simulate_mouse_move(target, gpui::MouseButton::Left, Modifiers::default());
+            draw_app(cx);
+            // The first move starts the drag; subsequent moves resize the panels.
+            if step > 0 {
+                let actual = cx.debug_bounds("outline-panel").unwrap().left();
+                let expected = outline.left() + px(delta);
+                assert!(
+                    (actual - expected).abs() <= px(2.0),
+                    "divider must follow mouse: expected={expected:?}, actual={actual:?}"
+                );
+            }
+        }
     }
 
     #[gpui::test]
