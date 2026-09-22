@@ -2832,6 +2832,46 @@ mod tests {
     }
 
     #[gpui::test]
+    fn markdown_table_wraps_long_unbroken_cell_content(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let mut app = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view =
+                cx.new(|cx| NativeMarkdownApp::new(None, DocumentImageRoot::default(), window, cx));
+            app = Some(view.clone());
+            gpui_component::Root::new(view, window, cx)
+        });
+        let app = app.unwrap();
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.document.content = format!(
+                    "| Name | Value |\n| --- | --- |\n| key | {} |",
+                    "long-unbroken-value".repeat(20)
+                );
+                app.refresh_analysis();
+                app.file_tree_open = false;
+                app.outline_open = false;
+                cx.notify();
+            })
+        });
+        cx.simulate_resize(size(px(520.0), px(420.0)));
+        draw_app(cx);
+
+        let header = cx.debug_bounds("markdown-table-row-0").unwrap();
+        let data = cx.debug_bounds("markdown-table-row-1").unwrap();
+        let key_cell = cx.debug_bounds("markdown-table-cell-1-0").unwrap();
+        let value_cell = cx.debug_bounds("markdown-table-cell-1-1").unwrap();
+        assert!(
+            value_cell.size.width > key_cell.size.width * 4,
+            "the long column must receive more width: key_cell={key_cell:?}, value_cell={value_cell:?}"
+        );
+        assert!(
+            data.size.height > header.size.height + px(8.0),
+            "long cell content must wrap and grow the row: header={header:?}, data={data:?}, key_cell={key_cell:?}, value_cell={value_cell:?}"
+        );
+    }
+
+    #[gpui::test]
     fn search_paints_and_centers_occurrences_inside_a_long_paragraph(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
         cx.update(bind_keys);

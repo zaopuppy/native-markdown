@@ -1268,7 +1268,10 @@ impl Node {
                             for (row_ix, row) in table.children.iter().enumerate() {
                                 rows.push(
                                     div()
-                                        .id("row")
+                                        .id(("markdown-table-row", row_ix))
+                                        .debug_selector(move || {
+                                            format!("markdown-table-row-{row_ix}")
+                                        })
                                         .w_full()
                                         .when(row_ix < table.children.len() - 1, |this| {
                                             this.border_b_1()
@@ -1289,7 +1292,15 @@ impl Node {
 
                                                 cells.push(
                                                     div()
-                                                        .id("cell")
+                                                        .id((
+                                                            "markdown-table-cell",
+                                                            row_ix * col_lens.len() + ix,
+                                                        ))
+                                                        .debug_selector(move || {
+                                                            format!(
+                                                                "markdown-table-cell-{row_ix}-{ix}"
+                                                            )
+                                                        })
                                                         .flex()
                                                         .when(
                                                             align == ColumnumnAlign::Center,
@@ -1300,16 +1311,19 @@ impl Node {
                                                             |this| this.justify_end(),
                                                         )
                                                         .w(Length::Definite(relative(len as f32)))
+                                                        .min_w_0()
                                                         .px_2()
                                                         .py_1()
                                                         .when(!is_last_col, |this| {
                                                             this.border_r_1()
                                                                 .border_color(cx.theme().border)
                                                         })
-                                                        .truncate()
+                                                        .whitespace_normal()
                                                         .child(
-                                                            cell.children
-                                                                .render(node_cx, window, cx),
+                                                            div().w_full().min_w_0().child(
+                                                                cell.children
+                                                                    .render(node_cx, window, cx),
+                                                            ),
                                                         ),
                                                 )
                                             }
