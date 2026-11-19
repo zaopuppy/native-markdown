@@ -1,4 +1,3 @@
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -11,13 +10,13 @@ use gpui::{
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Editor, EditorState, Escape, Input, InputEvent, InputState};
-use gpui_component::menu::ContextMenuExt as _;
+use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _};
 use gpui_component::resizable::{h_resizable, resizable_panel, ResizableState};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::tooltip::Tooltip;
 #[cfg(test)]
 use gpui_component::Theme;
-use gpui_component::{Disableable as _, Selectable as _, Sizable as _, StyledExt as _};
+use gpui_component::{Disableable as _, Icon, Selectable as _, Sizable as _, StyledExt as _};
 use rfd::AsyncFileDialog;
 
 use crate::benchmark::BenchmarkScenario;
@@ -35,63 +34,38 @@ const OUTLINE_HIDE_BELOW: f32 = 1000.0;
 
 fn state_button(button: Button, selected: bool) -> Button {
     button
+        .ghost()
         .selected(selected)
-        .border_1()
+        .border_0()
+        .rounded_md()
         .when(selected, |button| {
-            button
-                .bg(rgb(0x81531d))
-                .border_color(rgb(0x5f3a10))
-                .text_color(rgb(0xfffbf3))
-                .shadow_sm()
+            button.bg(rgb(0xe2e8e5)).text_color(rgb(0x285547))
         })
-        .when(!selected, |button| {
-            button
-                .bg(rgb(0xf6f1e7))
-                .border_color(rgb(0xbbaa8e))
-                .text_color(rgb(0x4f473d))
-        })
+        .when(!selected, |button| button.text_color(rgb(0x656b67)))
+}
+
+// Inline vectors keep toolbar icons crisp at every DPI without an external asset loader.
+fn tool_icon(paths: &str) -> Icon {
+    Icon::default().data(format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">{paths}</svg>"#
+    ).as_bytes()).size_4()
+}
+
+fn tool_button(id: &'static str, label: &'static str, paths: &str) -> Button {
+    Button::new(id)
+        .icon(tool_icon(paths))
+        .accessibility_label(label)
+        .tooltip(label)
+        .small()
+        .ghost()
+        .border_0()
+        .rounded_md()
+        .w(px(28.0))
+        .h(px(28.0))
 }
 
 fn outline_indent(level: u8) -> f32 {
     8.0 + level.saturating_sub(1) as f32 * 14.0
-}
-
-fn highlighted_search_snippet(
-    snippet: &str,
-    match_range: Range<usize>,
-    active: bool,
-    query: &str,
-) -> AnyElement {
-    let highlights = crate::search_ui::search_ranges(snippet, query)
-        .into_iter()
-        .map(|range| {
-            let selected = active && range == match_range;
-            (
-                range,
-                gpui::HighlightStyle {
-                    background_color: Some(
-                        if selected {
-                            rgb(0x3730a3)
-                        } else {
-                            rgb(0xffc857)
-                        }
-                        .into(),
-                    ),
-                    color: Some(
-                        if selected {
-                            rgb(0xffffff)
-                        } else {
-                            rgb(0x211a0e)
-                        }
-                        .into(),
-                    ),
-                    font_weight: Some(gpui::FontWeight::SEMIBOLD),
-                    ..Default::default()
-                },
-            )
-        })
-        .collect::<Vec<_>>();
-    crate::search_ui::SearchText::new(snippet.to_owned(), highlights).into_any_element()
 }
 
 actions!(
@@ -322,7 +296,8 @@ impl NativeMarkdownApp {
                 .count();
             view.update(source, self.document.path.as_deref(), offset, serde_json::json!({
                 "zoom":self.zoom.factor(), "heading":heading, "navigation":self.outline_jump_request,
-                "query":self.search_query, "occurrence":self.active_hit.saturating_sub(preceding), "searchRequest":self.search_request,
+                "query":if self.search_open { self.search_query.as_str() } else { "" }, "occurrence":self.active_hit.saturating_sub(preceding), "searchRequest":self.search_request,
+                "searchOpen":self.search_open,
                 "nativeSearchFocus":self.search_open && self.search_input.read(cx).focus_handle(cx).is_focused(window),
             }));
         }
@@ -408,6 +383,13 @@ impl NativeMarkdownApp {
                 self.focus_native_surface();
                 self.search_input
                     .update(cx, |input, cx| input.focus(window, cx));
+            }
+            Some("search-step") if self.search_open => {
+                if value["backward"].as_bool().unwrap_or(false) {
+                    self.previous_hit(window, cx);
+                } else {
+                    self.next_hit(window, cx);
+                }
             }
             Some("escape") if self.search_open => {
                 if let Some(view) = &self.web_preview {
@@ -553,6 +535,7 @@ impl NativeMarkdownApp {
 
                         this.source_search.clear();
                         this.refresh_search();
+                        this.search_request = this.search_request.wrapping_add(1);
                         cx.notify();
                     }
                     InputEvent::PressEnter { .. } => {}
@@ -1193,6 +1176,10 @@ impl NativeMarkdownApp {
         self.search_input.update(cx, |input, cx| {
             input.focus(window, cx);
         });
+        self.search_request = self.search_request.wrapping_add(1);
+        if !self.search_query.is_empty() {
+            self.activate_search_hit(window, cx);
+        }
         cx.notify();
     }
 
@@ -1206,6 +1193,9 @@ impl NativeMarkdownApp {
 
     fn close_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search_open = false;
+        self.active_search_offset = None;
+        self.source_search.dismiss(cx);
+        self.search_request = self.search_request.wrapping_add(1);
         self.app_focus.focus(window, cx);
         cx.notify();
     }
@@ -1380,228 +1370,194 @@ impl NativeMarkdownApp {
     }
 
     fn toolbar(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let dirty = if self.document.is_dirty() { " •" } else { "" };
         let width: f32 = window.viewport_size().width.into();
         let (regular_tree, regular_outline, overlay_tree, overlay_outline) =
             self.responsive_panel_visibility(width);
-        let tree_visible = regular_tree || overlay_tree;
-        let outline_visible = regular_outline || overlay_outline;
+        let app = cx.entity().downgrade();
+        let focus = self.app_focus.clone();
+        let file_menu = Button::new("file-menu")
+            .label("File")
+            .icon(tool_icon(r#"<path d="m9 10 3 3 3-3"/>"#))
+            .small()
+            .ghost()
+            .border_0()
+            .accessibility_label("File menu")
+            .dropdown_menu(move |menu, _, cx| {
+                #[cfg(windows)]
+                {
+                    let popup = cx.entity();
+                    app.update(cx, |app, cx| app.suspend_for_popup(popup, cx))
+                        .ok();
+                }
+                menu.action_context(focus.clone())
+                    .min_w(px(220.0))
+                    .menu("New document", Box::new(NewDocument))
+                    .menu("Open…", Box::new(OpenDocument))
+                    .separator()
+                    .menu("Save", Box::new(SaveDocument))
+                    .menu("Save as…", Box::new(SaveDocumentAs))
+            });
+        let app = cx.entity().downgrade();
+        let focus = self.app_focus.clone();
+        let more_menu = tool_button("view-menu", "More options",
+                r#"<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>"#)
+            .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |menu, _, cx| {
+                #[cfg(windows)]
+                {
+                    let popup = cx.entity();
+                    app.update(cx, |app, cx| app.suspend_for_popup(popup, cx)).ok();
+                }
+                menu.action_context(focus.clone())
+                    .min_w(px(220.0))
+                    .label("Reading mode")
+                    .menu("Preview", Box::new(ShowPreview))
+                    .menu("Split", Box::new(ShowSplit))
+                    .menu("Source", Box::new(ShowSource))
+                    .separator()
+                    .label("Document zoom")
+                    .menu("Zoom in", Box::new(ZoomIn))
+                    .menu("Zoom out", Box::new(ZoomOut))
+                    .menu("Actual size", Box::new(ResetZoom))
+            });
+        let modes = div().h_flex().gap(px(2.0)).p(px(2.0)).rounded_md()
+            .bg(rgb(0xeeefec))
+            .child(state_button(
+                tool_button("preview-mode", "Preview",
+                    r#"<path d="M2 4h7a3 3 0 0 1 3 3v14a4 4 0 0 0-4-3H2zM22 4h-7a3 3 0 0 0-3 3v14a4 4 0 0 1 4-3h6z"/>"#)
+                    .when(width >= 760.0, |b| b.label("Preview").w_auto().px_2()),
+                self.view_mode == ViewMode::Preview)
+                .on_click(cx.listener(|this, _, _, cx| this.set_view_mode(ViewMode::Preview, cx))))
+            .child(state_button(
+                tool_button("split-mode", "Split",
+                    r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/>"#)
+                    .when(width >= 760.0, |b| b.label("Split").w_auto().px_2()),
+                self.view_mode == ViewMode::Split)
+                .on_click(cx.listener(|this, _, _, cx| this.set_view_mode(ViewMode::Split, cx))))
+            .child(state_button(
+                tool_button("source-mode", "Source",
+                    r#"<path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-13-2 20"/>"#)
+                    .when(width >= 760.0, |b| b.label("Source").w_auto().px_2()),
+                self.view_mode == ViewMode::Source)
+                .on_click(cx.listener(|this, _, _, cx| this.set_view_mode(ViewMode::Source, cx))));
         div()
             .debug_selector(|| "application-toolbar".into())
             .h_flex()
-            .h(px(72.0))
+            .h(px(42.0))
             .flex_none()
             .items_center()
-            .gap_2()
-            .px_4()
+            .gap_1()
+            .px_3()
             .border_b_1()
-            .border_color(rgb(0xd3c8b5))
-            .bg(rgb(0xf6f1e7))
+            .border_color(rgb(0xdde0db))
+            .bg(rgb(0xf8f9f6))
+            .child(file_menu)
             .child(
-                div()
-                    .mr_3()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(0x96692b))
-                            .child("NATIVE / MARKDOWN"),
-                    )
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_semibold()
-                            .child(format!("{}{dirty}", self.document.display_name())),
+                state_button(
+                    tool_button(
+                        "toggle-file-tree",
+                        "Files",
+                        r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>"#,
                     ),
-            )
-            .child(
-                Button::new("new-document")
-                    .label("New")
-                    .small()
-                    .ghost()
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.request_document_action(DocumentAction::New, window, cx)
-                    })),
-            )
-            .child(
-                Button::new("open-document")
-                    .label("Open")
-                    .small()
-                    .ghost()
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.request_document_action(DocumentAction::OpenDialog, window, cx)
-                    })),
-            )
-            .child(
-                Button::new("save-document")
-                    .label("Save")
-                    .small()
-                    .on_click(cx.listener(|this, _, window, cx| this.save_current(window, cx))),
-            )
-            .child(div().w(px(1.0)).h(px(24.0)).mx_2().bg(rgb(0xd3c8b5)))
-            .child(
-                state_button(
-                    Button::new("preview-mode").label("Preview").small(),
-                    self.view_mode == ViewMode::Preview,
-                )
-                .on_click(cx.listener(|this, _, _, cx| this.set_view_mode(ViewMode::Preview, cx))),
-            )
-            .child(
-                state_button(
-                    Button::new("split-mode").label("Split").small(),
-                    self.view_mode == ViewMode::Split,
-                )
-                .on_click(cx.listener(|this, _, _, cx| this.set_view_mode(ViewMode::Split, cx))),
-            )
-            .child(
-                state_button(
-                    Button::new("source-mode").label("Source").small(),
-                    self.view_mode == ViewMode::Source,
-                )
-                .on_click(cx.listener(|this, _, _, cx| this.set_view_mode(ViewMode::Source, cx))),
-            )
-            .child(div().flex_1())
-            .child(
-                state_button(
-                    Button::new("toggle-file-tree").label("Files").small(),
-                    tree_visible,
+                    regular_tree || overlay_tree,
                 )
                 .on_click(cx.listener(|this, _, window, cx| this.toggle_file_tree(window, cx))),
             )
             .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .px_2()
+                    .text_sm()
+                    .truncate()
+                    .text_color(rgb(0x656b67))
+                    .child(format!(
+                        "{}{}",
+                        self.document.display_name(),
+                        if self.document.is_dirty() { " •" } else { "" }
+                    )),
+            )
+            .child(modes)
+            .child(div().w(px(1.0)).h(px(16.0)).mx_2().bg(rgb(0xdde0db)))
+            .child(
+                tool_button(
+                    "find-document",
+                    "Find",
+                    r#"<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>"#,
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.show_search(window, cx))),
+            )
+            .child(
                 state_button(
-                    Button::new("toggle-outline").label("Outline").small(),
-                    outline_visible,
+                    tool_button(
+                        "toggle-outline",
+                        "Outline",
+                        r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>"#,
+                    ),
+                    regular_outline || overlay_outline,
                 )
                 .on_click(cx.listener(|this, _, window, cx| this.toggle_outline(window, cx))),
             )
-            .child(
-                Button::new("find-document")
-                    .label("Find")
-                    .small()
-                    .on_click(cx.listener(|this, _, window, cx| this.show_search(window, cx))),
-            )
-            .child(div().w(px(1.0)).h(px(24.0)).mx_2().bg(rgb(0xd3c8b5)))
-            .child(
-                Button::new("zoom-out")
-                    .label("−")
-                    .small()
-                    .ghost()
-                    .on_click(cx.listener(|this, _, window, cx| this.zoom_out(window, cx))),
-            )
-            .child(
-                Button::new("reset-zoom")
-                    .label(format!("{}%", self.zoom.percent()))
-                    .small()
-                    .ghost()
-                    .on_click(cx.listener(|this, _, window, cx| this.reset_zoom(window, cx))),
-            )
-            .child(
-                Button::new("zoom-in")
-                    .label("+")
-                    .small()
-                    .ghost()
-                    .on_click(cx.listener(|this, _, window, cx| this.zoom_in(window, cx))),
-            )
+            .child(more_menu)
     }
 
     fn search_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self.search_hits.len();
         let current = if count == 0 { 0 } else { self.active_hit + 1 };
-        let mut bar = div()
+        div()
             .debug_selector(|| "search-bar".into())
-            .v_flex()
+            .h_flex()
+            .h(px(42.0))
             .w_full()
             .flex_none()
-            .px_4()
-            .py_2()
-            .border_b_1()
-            .border_color(rgb(0xd3c8b5))
+            .px_3()
             .gap_2()
-            .bg(rgb(0xebe3d4));
-        bar = bar.child(
-            div()
-                .h_flex()
-                .gap_2()
-                .items_center()
-                .child(div().w(px(320.0)).child(Input::new(&self.search_input)))
-                .child(
-                    div()
-                        .px_2()
-                        .py_1()
-                        .rounded_sm()
-                        .bg(rgb(0xded4c2))
-                        .font_semibold()
-                        .text_color(rgb(0x40382e))
-                        .child(if count == 0 {
-                            "No matches".to_owned()
-                        } else {
-                            format!("{current} of {count}")
-                        }),
-                )
-                .child(
-                    Button::new("previous-hit")
-                        .label("Previous  ⇧↵")
-                        .small()
-                        .on_click(cx.listener(|this, _, window, cx| this.previous_hit(window, cx))),
-                )
-                .child(
-                    Button::new("next-hit")
-                        .label("Next  ↵")
-                        .small()
-                        .on_click(cx.listener(|this, _, window, cx| this.next_hit(window, cx))),
-                )
-                .child(div().flex_1())
-                .child(
-                    Button::new("close-search")
-                        .label("Close")
-                        .small()
-                        .ghost()
-                        .on_click(cx.listener(|this, _, window, cx| this.close_search(window, cx))),
-                ),
-        );
-        let start = self.active_hit.saturating_sub(2);
-        for index in start..(start + 5).min(count) {
-            let hit = self.search_hits[index].clone();
-            let selected = index == self.active_hit;
-            bar = bar.child(
+            .items_center()
+            .border_b_1()
+            .border_color(rgb(0xdde0db))
+            .bg(rgb(0xf8f9f6))
+            .child(
                 div()
-                    .id(("search-result", index))
-                    .debug_selector(move || format!("search-result-{index}"))
-                    .tab_index(0)
-                    .focus(|style| style.border_color(rgb(0x3730a3)).bg(rgb(0xdde0ff)))
-                    .h_flex()
-                    .w_full()
-                    .items_center()
+                    .flex_1()
                     .min_w_0()
-                    .border_1()
-                    .border_l_4()
-                    .border_color(if selected {
-                        rgb(0x3730a3)
+                    .max_w(px(480.0))
+                    .child(Input::new(&self.search_input).small()),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(0x6b716b))
+                    .child(if count == 0 {
+                        "No matches".to_owned()
                     } else {
-                        rgb(0xd3c8b5)
-                    })
-                    .pl_2()
-                    .py_1()
-                    .rounded_sm()
-                    .bg(if selected {
-                        rgb(0xe5e7ff)
-                    } else {
-                        rgb(0xfaf7f0)
-                    })
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.active_hit = index;
-                        this.activate_search_hit(window, cx);
-                    }))
-                    .child(highlighted_search_snippet(
-                        &hit.snippet,
-                        hit.match_range,
-                        selected,
-                        &self.search_query,
-                    )),
-            );
-        }
-        bar
+                        format!("{current} of {count}")
+                    }),
+            )
+            .child(
+                tool_button(
+                    "previous-hit",
+                    "Previous match (Shift+Enter)",
+                    r#"<path d="m6 15 6-6 6 6"/>"#,
+                )
+                .disabled(count == 0)
+                .on_click(cx.listener(|this, _, window, cx| this.previous_hit(window, cx))),
+            )
+            .child(
+                tool_button(
+                    "next-hit",
+                    "Next match (Enter)",
+                    r#"<path d="m6 9 6 6 6-6"/>"#,
+                )
+                .disabled(count == 0)
+                .on_click(cx.listener(|this, _, window, cx| this.next_hit(window, cx))),
+            )
+            .child(
+                tool_button(
+                    "close-search",
+                    "Close search (Escape)",
+                    r#"<path d="m6 6 12 12M6 18 18 6"/>"#,
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.close_search(window, cx))),
+            )
     }
 
     fn file_tree_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1632,10 +1588,11 @@ impl NativeMarkdownApp {
         let header = div()
             .v_flex()
             .flex_none()
-            .gap_2()
-            .p_3()
+            .gap_1()
+            .p_2()
+            .text_sm()
             .border_b_1()
-            .border_color(rgb(0xd3c8b5))
+            .border_color(rgb(0xdde0db))
             .child(
                 div()
                     .h_flex()
@@ -1654,7 +1611,8 @@ impl NativeMarkdownApp {
                     )
                     .child(
                         Button::new("close-file-tree")
-                            .label("×")
+                            .icon(tool_icon(r#"<path d="m6 6 12 12M6 18 18 6"/>"#))
+                            .accessibility_label("Close File Tree")
                             .small()
                             .ghost()
                             .tooltip("Close file tree")
@@ -1670,13 +1628,10 @@ impl NativeMarkdownApp {
                 div()
                     .h_flex()
                     .gap_1()
-                    .mb_2()
-                    .pb_2()
-                    .border_b_1()
-                    .border_color(rgb(0xd3c8b5))
                     .child(
                         Button::new("tree-up")
-                            .label("↑")
+                            .icon(tool_icon(r#"<path d="M12 20V4m-7 7 7-7 7 7"/>"#))
+                            .accessibility_label("Tree Up")
                             .small()
                             .ghost()
                             .disabled(!can_go_up)
@@ -1685,7 +1640,8 @@ impl NativeMarkdownApp {
                     )
                     .child(
                         Button::new("tree-document-root")
-                            .label("⌂")
+                            .icon(tool_icon(r#"<path d="m3 10 9-7 9 7v10H3zM9 20v-7h6v7"/>"#))
+                            .accessibility_label("Tree Document Root")
                             .small()
                             .ghost()
                             .disabled(!has_document_path)
@@ -1696,22 +1652,19 @@ impl NativeMarkdownApp {
                     )
                     .child(
                         Button::new("tree-refresh")
-                            .label("↻")
+                            .icon(tool_icon(r#"<path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 7a7 7 0 0 1 12-1l2 6M4 12l2 6a7 7 0 0 0 12-1"/>"#))
+                            .accessibility_label("Tree Refresh")
                             .small()
                             .ghost()
                             .disabled(root.is_none())
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.refresh_file_tree(window, cx)
                             })),
-                    ),
-            )
-            .child(
-                div()
-                    .h_flex()
-                    .gap_1()
+                    )
                     .child(
                         Button::new("tree-choose-root")
-                            .label("…")
+                            .icon(tool_icon(r#"<path d="M3 7h7l2-3h9v16H3z"/>"#))
+                            .accessibility_label("Tree Choose Root")
                             .small()
                             .ghost()
                             .tooltip("Choose a folder as root")
@@ -1741,7 +1694,7 @@ impl NativeMarkdownApp {
                 view.child(
                     div()
                         .text_xs()
-                        .text_color(rgb(0x96692b))
+                        .text_color(rgb(0x4d6c5e))
                         .child("Current file is not shown in this tree"),
                 )
             });
@@ -1761,7 +1714,7 @@ impl NativeMarkdownApp {
                     .gap_2()
                     .p_4()
                     .text_sm()
-                    .text_color(rgb(0x70685b))
+                    .text_color(rgb(0x6b716b))
                     .child("Save the document to show its folder.")
                     .child(
                         Button::new("tree-empty-save")
@@ -1792,20 +1745,20 @@ impl NativeMarkdownApp {
                         let path = entry.path.clone();
                         let is_active = self.document.path.as_deref() == Some(path.as_path());
                         let is_cursor = self.file_tree.selected() == Some(path.as_path());
-                        let (prefix, is_directory, traversable) = match entry.kind {
-                            EntryKind::Directory { traversable } => (
-                                if !traversable {
-                                    "↗"
-                                } else if expanded {
-                                    "▾"
-                                } else {
-                                    "▸"
-                                },
-                                true,
-                                traversable,
-                            ),
-                            EntryKind::Markdown => ("◆", false, false),
+                        let (is_directory, traversable) = match entry.kind {
+                            EntryKind::Directory { traversable } => (true, traversable),
+                            EntryKind::Markdown => (false, false),
                         };
+                        let entry_icon = if is_directory {
+                            if expanded {
+                                tool_icon(r#"<path d="M3 18V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v2"/><path d="M3 10h19l-3 10H5z" fill="currentColor" fill-opacity=".24"/>"#)
+                            } else {
+                                tool_icon(r#"<path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="currentColor" fill-opacity=".24"/><path d="M3 8h18"/>"#)
+                            }.text_color(rgb(0xa87520))
+                        } else {
+                            tool_icon(r#"<path d="M14 2H5a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9z" fill="currentColor" fill-opacity=".10"/><path d="M14 2v7h7M6 17v-6l3 4 3-4v6m5-6v6m-2-2 2 2 2-2"/>"#)
+                                .text_color(rgb(0x477a9a))
+                        }.size_5();
                         let click_path = path.clone();
                         let path_tooltip = path.display().to_string();
                         let focus = self.file_tree_focus.clone();
@@ -1813,27 +1766,36 @@ impl NativeMarkdownApp {
                             .id(("file-tree-row", row_index))
                             .h_flex()
                             .h(px(30.0))
+                            .items_center()
                             .flex_none()
                             .min_w_0()
                             .pl(px(8.0 + depth as f32 * 16.0))
                             .pr_2()
-                            .gap_2()
+                            .gap(px(6.0))
                             .text_sm()
                             .cursor_pointer()
-                            .when(is_active, |view| view.bg(rgb(0xd7c4a5)).font_semibold())
-                            .when(is_cursor && !is_active, |view| view.bg(rgb(0xe3d8c6)))
-                            .hover(|view| view.bg(rgb(0xe6dccb)))
+                            .when(is_active, |view| view.bg(rgb(0xdfe7de)).font_semibold())
+                            .when(is_cursor && !is_active, |view| view.bg(rgb(0xe7ece5)))
+                            .hover(|view| view.bg(rgb(0xe7ece5)))
                             .child(
                                 div()
-                                    .w(px(14.0))
+                                    .w(px(10.0))
                                     .flex_none()
-                                    .text_color(if is_directory {
-                                        rgb(0x96692b)
-                                    } else {
-                                        rgb(0x665b4d)
-                                    })
-                                    .child(prefix),
+                                    .text_color(rgb(0x6b716b))
+                                    .when(is_directory, |view| {
+                                        view.child(
+                                            tool_icon(if !traversable {
+                                                r#"<path d="M6 18 18 6M6 6h12v12"/>"#
+                                            } else if expanded {
+                                                r#"<path d="m6 9 6 6 6-6"/>"#
+                                            } else {
+                                                r#"<path d="m9 6 6 6-6 6"/>"#
+                                            })
+                                            .size(px(10.0)),
+                                        )
+                                    }),
                             )
+                            .child(div().size(px(20.0)).flex_none().child(entry_icon))
                             .child(div().min_w_0().truncate().child(entry.name.clone()))
                             .tooltip(move |window, cx| {
                                 Tooltip::new(path_tooltip.clone()).build(window, cx)
@@ -1894,7 +1856,7 @@ impl NativeMarkdownApp {
                                 .pl(px(24.0 + depth as f32 * 16.0))
                                 .py_1()
                                 .text_xs()
-                                .text_color(rgb(0x70685b))
+                                .text_color(rgb(0x6b716b))
                                 .child(if refreshing {
                                     "Refreshing…"
                                 } else {
@@ -1960,8 +1922,8 @@ impl NativeMarkdownApp {
             .min_h_0()
             .overflow_hidden()
             .border_r_1()
-            .border_color(rgb(0xd3c8b5))
-            .bg(rgb(0xebe3d4))
+            .border_color(rgb(0xdde0db))
+            .bg(rgb(0xf1f3ef))
             .child(header)
             .child(body)
     }
@@ -1976,11 +1938,12 @@ impl NativeMarkdownApp {
             .h_full()
             .flex_none()
             .overflow_y_scrollbar()
-            .p_3()
+            .p_2()
+            .text_sm()
             .gap_1()
             .border_l_1()
-            .border_color(rgb(0xd3c8b5))
-            .bg(rgb(0xebe3d4))
+            .border_color(rgb(0xdde0db))
+            .bg(rgb(0xf1f3ef))
             .child(
                 div()
                     .debug_selector(|| "outline-mode-toolbar".into())
@@ -1989,7 +1952,7 @@ impl NativeMarkdownApp {
                     .mb_2()
                     .pb_2()
                     .border_b_1()
-                    .border_color(rgb(0xd3c8b5))
+                    .border_color(rgb(0xdde0db))
                     .child(
                         state_button(
                             Button::new("outline-jump-mode").label("Jump").small(),
@@ -2053,8 +2016,7 @@ impl NativeMarkdownApp {
             let section_index = sections
                 .iter()
                 .position(|section| section.heading_index == Some(heading_index));
-            let marker = if heading.level == 1 { "◆" } else { "•" };
-            let label = format!("{marker} {}", heading.title);
+            let label = heading.title.clone();
             panel = panel.child(
                 Button::new(("outline-heading", heading_index))
                     .accessibility_label(label.clone())
@@ -2062,7 +2024,7 @@ impl NativeMarkdownApp {
                         div().h_flex().w_full().min_w_0().child(
                             div()
                                 .debug_selector(move || {
-                                    format!("outline-heading-label-{heading_index}").into()
+                                    format!("outline-heading-label-{heading_index}")
                                 })
                                 .min_w_0()
                                 .text_ellipsis()
@@ -2096,7 +2058,7 @@ impl NativeMarkdownApp {
                 div()
                     .p_3()
                     .text_sm()
-                    .text_color(rgb(0x70685b))
+                    .text_color(rgb(0x6b716b))
                     .child("This document has no headings"),
             );
         }
@@ -2152,7 +2114,7 @@ impl NativeMarkdownApp {
             .min_w_0()
             .min_h_0()
             .overflow_hidden()
-            .bg(rgb(0xeee9df))
+            .bg(rgb(0xf7f8f5))
             .child(
                 Editor::new(&self.editor)
                     .size_full()
@@ -2169,7 +2131,7 @@ impl NativeMarkdownApp {
             .items_center()
             .justify_center()
             .gap_3()
-            .bg(rgb(0xfaf7f0))
+            .bg(rgb(0xfafbf8))
             .child(
                 div()
                     .text_3xl()
@@ -2178,7 +2140,7 @@ impl NativeMarkdownApp {
             )
             .child(
                 div()
-                    .text_color(rgb(0x70685b))
+                    .text_color(rgb(0x6b716b))
                     .child("A quiet native reader powered by GPUI Component."),
             )
             .child(
@@ -2222,7 +2184,7 @@ impl NativeMarkdownApp {
             .child(
                 div()
                     .text_sm()
-                    .text_color(rgb(0x70685b))
+                    .text_color(rgb(0x6b716b))
                     .child("Drop a .md file anywhere · Ctrl+O to open"),
             )
     }
@@ -2238,7 +2200,7 @@ impl NativeMarkdownApp {
                     .h_flex()
                     .size_full()
                     .child(self.editor_panel())
-                    .child(div().w(px(1.0)).h_full().bg(rgb(0xd3c8b5)))
+                    .child(div().w(px(1.0)).h_full().bg(rgb(0xdde0db)))
                     .child(self.preview_panel())
                     .into_any_element(),
             }
@@ -2350,9 +2312,15 @@ impl NativeMarkdownApp {
         let local_images = self
             .web_preview
             .as_ref()
-            .map_or(0, |preview| preview.borrow().image_count());
+            .map_or(0, |view| view.borrow().image_count());
         #[cfg(not(windows))]
         let local_images = 0;
+        let details = format!(
+            "{} · {}% · {} local images",
+            self.view_mode.label(),
+            self.zoom.percent(),
+            local_images
+        );
         let left = self.notice.as_ref().map_or_else(
             || {
                 if self.document.is_dirty() {
@@ -2366,30 +2334,38 @@ impl NativeMarkdownApp {
         let left_color = if self.notice.as_ref().is_some_and(|notice| notice.is_error) {
             rgb(0x9b392a)
         } else {
-            rgb(0x70685b)
+            rgb(0x6b716b)
         };
-
         div()
             .h_flex()
-            .h(px(30.0))
+            .h(px(24.0))
             .flex_none()
             .items_center()
-            .justify_between()
-            .px_4()
+            .gap_3()
+            .px_3()
             .border_t_1()
-            .border_color(rgb(0xd3c8b5))
-            .bg(rgb(0xebe3d4))
-            .text_sm()
-            .text_color(rgb(0x70685b))
-            .child(div().text_color(left_color).child(left))
+            .border_color(rgb(0xdde0db))
+            .bg(rgb(0xf8f9f6))
+            .text_xs()
+            .text_color(rgb(0x6b716b))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(left_color)
+                    .child(left),
+            )
             .child(format!(
-                "{} words · {} min read · {} · {}% · {} local images",
-                self.word_count,
-                self.reading_minutes,
-                self.view_mode.label(),
-                self.zoom.percent(),
-                local_images,
+                "{} words · {} min read",
+                self.word_count, self.reading_minutes
             ))
+            .child(
+                div()
+                    .id("document-status")
+                    .child(format!("{}%", self.zoom.percent()))
+                    .tooltip(move |window, cx| Tooltip::new(details.clone()).build(window, cx)),
+            )
     }
 
     fn handle_drop(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
@@ -2428,14 +2404,18 @@ impl Render for NativeMarkdownApp {
                     cx.stop_propagation();
                 }
             }))
-            .capture_action(
-                cx.listener(|this, _: &gpui_component::input::Enter, window, cx| {
+            .capture_action(cx.listener(
+                |this, action: &gpui_component::input::Enter, window, cx| {
                     if this.search_open {
-                        this.next_hit(window, cx);
+                        if action.shift {
+                            this.previous_hit(window, cx);
+                        } else {
+                            this.next_hit(window, cx);
+                        }
                         cx.stop_propagation();
                     }
-                }),
-            )
+                },
+            ))
             .capture_action(cx.listener(|this, _: &FileTreeOpen, window, cx| {
                 if this.search_open {
                     this.next_hit(window, cx);
@@ -2523,8 +2503,8 @@ impl Render for NativeMarkdownApp {
             .relative()
             .size_full()
             .overflow_hidden()
-            .bg(rgb(0xf6f1e7))
-            .text_color(rgb(0x292723))
+            .bg(rgb(0xf8f9f6))
+            .text_color(rgb(0x292e2b))
             .child(self.toolbar(window, cx))
             .when(self.search_open, |view| view.child(self.search_bar(cx)))
             .child(self.workspace(window, cx))
@@ -2612,7 +2592,8 @@ mod tests {
         let app = app.unwrap();
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
-                app.document.content = "# Search\n\nFirst Needle.\n\nSecond Needle.".into();
+                app.document.content =
+                    "# Search\n\nFirst Needle.\n\nSecond Needle.\n\nThird Needle.".into();
                 app.refresh_analysis();
                 app.file_tree_focus.focus(window, cx);
                 app.show_search(window, cx);
@@ -2628,7 +2609,7 @@ mod tests {
         });
         cx.simulate_keystrokes("shift-enter");
         app.read_with(cx, |app, _| {
-            assert_eq!(app.active_hit, 1, "Shift+Enter must wrap to last result")
+            assert_eq!(app.active_hit, 2, "Shift+Enter must wrap to last result")
         });
         cx.update(|window, cx| app.read(cx).file_tree_focus.clone().focus(window, cx));
         draw_app(cx);
@@ -2640,7 +2621,7 @@ mod tests {
             )
         });
         cx.simulate_keystrokes("shift-enter");
-        app.read_with(cx, |app, _| assert_eq!(app.active_hit, 1));
+        app.read_with(cx, |app, _| assert_eq!(app.active_hit, 2));
         cx.simulate_keystrokes("escape");
         cx.update(|window, cx| app.read(cx).file_tree_focus.clone().focus(window, cx));
         draw_app(cx);
@@ -2651,7 +2632,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn search_result_previews_use_the_full_search_bar_width(cx: &mut TestAppContext) {
+    fn search_bar_uses_one_row_without_result_candidates(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
         let mut app = None;
         let (_, cx) = cx.add_window_view(|window, cx| {
@@ -2675,10 +2656,13 @@ mod tests {
         draw_app(cx);
 
         let bar = cx.debug_bounds("search-bar").unwrap();
-        let first_result = cx.debug_bounds("search-result-0").unwrap();
         assert!(
-            first_result.size.width >= bar.size.width - px(34.0),
-            "result preview must fill the search bar's padded content width: bar={bar:?}, result={first_result:?}"
+            cx.debug_bounds("search-result-0").is_none(),
+            "search must not show candidate rows"
+        );
+        assert!(
+            bar.size.height <= px(44.0),
+            "search must stay in one compact row: {bar:?}"
         );
     }
 
@@ -2753,6 +2737,23 @@ mod tests {
             );
         });
         cx.simulate_keystrokes("escape");
+        app.read_with(cx, |app, cx| {
+            assert!(
+                app.source_search.highlight_ranges(cx).is_empty(),
+                "closing search must clear decorations before the editor paints"
+            );
+        });
+        draw_app(cx);
+        app.read_with(cx, |app, cx| {
+            assert!(
+                app.source_search.highlight_ranges(cx).is_empty(),
+                "closing search must remove editor decorations"
+            );
+            assert!(
+                !app.source_search.geometry().painted,
+                "closing search must remove the source marker"
+            );
+        });
         cx.update(|window, cx| {
             app.read(cx)
                 .editor

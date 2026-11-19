@@ -1,4 +1,4 @@
-:root { color-scheme: light dark; font: 16px/1.7 "Segoe UI", "Microsoft YaHei UI", sans-serif; color: #292723; background: #faf8f3; --scrollbar-thumb: #70685b55; --scrollbar-hover: #70685b99; }
+:root { color-scheme: light dark; font: 16px/1.7 "Segoe UI", "Microsoft YaHei UI", sans-serif; color: #292e2b; background: #fafbf8; --scrollbar-thumb: #6b716b55; --scrollbar-hover: #6b716b99; }
 * { box-sizing: border-box; }
 /* Narrow, rounded scrollbars for the document, code blocks and diagram viewports. */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -11,18 +11,19 @@ body { margin: 0; }
 main { max-width: 980px; margin: auto; padding: 28px 36px 80px; overflow-wrap: anywhere; }
 .reading-section { content-visibility: auto; contain-intrinsic-size: auto 500px; }
 h1,h2,h3,h4,h5,h6 { line-height: 1.35; scroll-margin-top: 24px; }
-h1 { font-size: 2em; } h2 { margin-top: 1.7em; border-bottom: 1px solid #d3c8b5; padding-bottom: .3em; }
-a { color: #38658a; } blockquote { margin-left: 0; padding-left: 1em; border-left: 3px solid #bbaa8e; color: #70685b; }
-pre { padding: 16px; background: #eeeae2; border-radius: 6px; overflow: auto; overflow-wrap: normal; }
-code { font-family: Consolas, monospace; font-size: .88em; } :not(pre)>code { background: #eeeae2; padding: 2px 4px; border-radius: 3px; }
-table { border-collapse: collapse; width: 100%; margin: 1em 0; } td,th { border: 1px solid #cfc6b8; padding: 8px 12px; min-width: 60px; } th { background: #eeeae2; }
+h1 { font-size: 2em; } h2 { margin-top: 1.7em; border-bottom: 1px solid #dde0db; padding-bottom: .3em; }
+a { color: #38658a; } blockquote { margin-left: 0; padding-left: 1em; border-left: 3px solid #cbd2ca; color: #6b716b; }
+pre { padding: 16px; background: #eef1eb; border-radius: 6px; overflow: auto; overflow-wrap: normal; }
+code { font-family: Consolas, monospace; font-size: .88em; } :not(pre)>code { background: #eef1eb; padding: 2px 4px; border-radius: 3px; }
+table { border-collapse: collapse; width: 100%; margin: 1em 0; } td,th { border: 1px solid #d8ded6; padding: 8px 12px; min-width: 60px; } th { background: #eef1eb; }
 img { max-width: 100%; height: auto; } .math-display { overflow-x: auto; padding: 12px; }
-main img {cursor:zoom-in;} dialog.image-viewer {width:92vw;height:90vh;max-width:none;max-height:none;padding:0;border:1px solid #bbaa8e;background:#faf8f3;color:#292723;}
+main img {cursor:zoom-in;} dialog.image-viewer {width:92vw;height:90vh;max-width:none;max-height:none;padding:0;border:1px solid #cbd2ca;background:#fafbf8;color:#292e2b;}
 dialog.image-viewer::backdrop {background:#111b;} .image-viewer .diagram-stage {height:calc(100% - 45px);max-height:none;}
-.diagram { margin: 20px 0; border: 1px solid #d3c8b5; border-radius: 6px; overflow: hidden; content-visibility: auto; contain-intrinsic-size: auto 400px; }
-.diagram-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 10px; background: #eeeae2; font: 12px/1.5 "Segoe UI",sans-serif; }
-button { font: inherit; color: inherit; border: 1px solid #bbaa8e; border-radius: 4px; background: transparent; padding: 3px 10px; cursor: pointer; }
-button:focus-visible { outline: 2px solid #38658a; } button[aria-pressed=true] { background: #81531d; color: white; }
+.diagram { margin: 20px 0; border: 1px solid #dde0db; border-radius: 6px; overflow: hidden; content-visibility: auto; contain-intrinsic-size: auto 400px; }
+.diagram-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 10px; background: #eef1eb; font: 12px/1.5 "Segoe UI",sans-serif; }
+button { font: inherit; color: inherit; border: 1px solid transparent; border-radius: 5px; background: transparent; padding: 3px 8px; cursor: pointer; }
+button:hover { background: #6b716b18; }
+button:focus-visible { outline: 2px solid #38658a; } button[aria-pressed=true] { background: #285547; color: white; }
 .diagram-stage { overflow: auto; max-height: 650px; min-height: 160px; padding: 16px; background: #fff; }
 .diagram-stage.pan { cursor: grab; user-select: none; } .diagram-stage.pan:active { cursor: grabbing; }
 .diagram-stage svg { display: block; max-width: none !important; user-select: text; }

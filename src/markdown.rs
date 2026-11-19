@@ -18,8 +18,6 @@ pub struct Section {
 #[derive(Clone, Debug)]
 pub struct SearchHit {
     pub section_index: usize,
-    pub snippet: String,
-    pub match_range: Range<usize>,
     pub source_offset: Option<usize>,
     pub source_end: usize,
 }
@@ -161,15 +159,12 @@ pub fn search(markdown: &str, query: &str, headings: &[Heading]) -> Vec<SearchHi
             for range in crate::search_ui::search_ranges(text, query) {
                 let offset = positions[range.start].start;
                 let source_end = positions[range.end - 1].end;
-                let (snippet, match_range) = search_snippet(text, range.start, range.len());
                 let section_index = sections
                     .iter()
                     .position(|s| s.range.contains(&offset))
                     .unwrap_or(0);
                 hits.push(SearchHit {
                     section_index,
-                    snippet,
-                    match_range,
                     source_offset: Some(offset),
                     source_end,
                 });
@@ -226,44 +221,6 @@ pub fn search(markdown: &str, query: &str, headings: &[Heading]) -> Vec<SearchHi
     hits
 }
 
-fn search_snippet(text: &str, offset: usize, match_len: usize) -> (String, Range<usize>) {
-    let start = text[..offset]
-        .char_indices()
-        .rev()
-        .nth(24)
-        .map_or(0, |(index, _)| index);
-    let tail = (offset + match_len).min(text.len());
-    let end = text[tail..]
-        .char_indices()
-        .nth(36)
-        .map_or(text.len(), |(index, _)| tail + index);
-    let prefix = normalize_whitespace(&text[start..offset]);
-    let matched = normalize_whitespace(&text[offset..tail]);
-    let suffix = normalize_whitespace(&text[tail..end]);
-    let prefix_separator = (!prefix.is_empty()
-        && text[..offset]
-            .chars()
-            .next_back()
-            .is_some_and(char::is_whitespace)) as usize;
-    let suffix_separator = (!suffix.is_empty()
-        && text[tail..].chars().next().is_some_and(char::is_whitespace))
-        as usize;
-    let match_start = prefix.len() + prefix_separator;
-    let match_end = match_start + matched.len();
-    (
-        format!(
-            "{prefix}{}{matched}{}{suffix}",
-            " ".repeat(prefix_separator),
-            " ".repeat(suffix_separator)
-        ),
-        match_start..match_end,
-    )
-}
-
-fn normalize_whitespace(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 fn heading_level(level: HeadingLevel) -> u8 {
     match level {
         HeadingLevel::H1 => 1,
@@ -302,14 +259,12 @@ mod tests {
     }
 
     #[test]
-    fn search_preserves_snippet_casing_and_marks_the_match_range() {
+    fn search_preserves_original_case_and_source_range() {
         let source = "# Notes\nThe OpenAI API is ready.";
         let outline = headings(source);
         let hits = search(source, "api", &outline);
 
         assert_eq!(hits.len(), 1);
-        assert!(hits[0].snippet.contains("OpenAI API"));
-        assert_eq!(&hits[0].snippet[hits[0].match_range.clone()], "API");
         assert_eq!(&source[hits[0].source_offset.unwrap()..][..3], "API");
     }
 
@@ -335,7 +290,7 @@ mod tests {
             for hit in search(source, query, &outline) {
                 assert!(source.is_char_boundary(hit.source_offset.unwrap()));
                 assert!(source.is_char_boundary(hit.source_end));
-                assert!(!hit.snippet[hit.match_range].is_empty());
+                assert!(hit.source_end > hit.source_offset.unwrap());
             }
         }
     }

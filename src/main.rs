@@ -20,7 +20,7 @@ mod zoom;
 use std::path::PathBuf;
 
 use app::NativeMarkdownApp;
-use gpui::{px, size, App, AppContext, Bounds, WindowBounds, WindowOptions};
+use gpui::{px, rgb, size, App, AppContext, Bounds, WindowBounds, WindowOptions};
 use gpui_component::{Root, Theme};
 
 static PROCESS_STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
@@ -120,4 +120,14 @@ fn configure_theme(cx: &mut App) {
     theme.font_size = px(16.0);
     theme.mono_font_family = "Consolas".into();
     theme.mono_font_size = px(13.0);
+    theme.colors.accent = rgb(0xe6ebe5).into();
+    theme.colors.accent_foreground = rgb(0x285547).into();
+    theme.colors.border = rgb(0xdde0db).into();
+    theme.colors.popover = rgb(0xfafbf8).into();
+    theme.colors.popover_foreground = rgb(0x292e2b).into();
+    theme.colors.secondary = rgb(0xeeefec).into();
+    theme.colors.secondary_hover = rgb(0xe6ebe5).into();
+    theme.colors.secondary_active = rgb(0xdbe3da).into();
+    theme.colors.secondary_foreground = rgb(0x404a43).into();
+    theme.colors.ring = rgb(0x557d69).into();
 }

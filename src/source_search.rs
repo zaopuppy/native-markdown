@@ -30,6 +30,15 @@ struct Marker {
 pub(crate) struct SourceSearch(Rc<RefCell<Marker>>);
 
 impl SourceSearch {
+    pub fn dismiss(&self, cx: &mut App) {
+        self.clear();
+        // Clear before editor prepaint: changing decorations from the observer's canvas
+        // can leave the editor's cached text painted with the previous highlight.
+        if let Some(decorations) = self.0.borrow().decorations.clone() {
+            decorations.clear(cx);
+        }
+    }
+
     pub fn clear(&self) {
         let mut state = self.0.borrow_mut();
         state.target = None;
@@ -49,6 +58,15 @@ impl SourceSearch {
     #[cfg(test)]
     pub fn geometry(&self) -> SearchGeometry {
         self.0.borrow().geometry.clone()
+    }
+
+    #[cfg(test)]
+    pub fn highlight_ranges(&self, cx: &App) -> Vec<Range<usize>> {
+        self.0
+            .borrow()
+            .decorations
+            .as_ref()
+            .map_or_else(Vec::new, |marks| marks.get_ranges(cx))
     }
 
     /// Runs after the editor's layout without adding a second input or hit target.

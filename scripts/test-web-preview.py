@@ -127,6 +127,21 @@ Text after broken Mermaid.
             # Test actual Ctrl+C on a DOM text selection; inspect OS clipboard in PowerShell afterwards.
             page.keyboard.press('Control+c')
             page.screenshot(path=str(repo/'tmp/web-preview-acceptance.png'))
+            # Search lifecycle: next/previous occurrence and clearing both CSS marks and selection.
+            page.evaluate("""() => {
+                const base={zoom:1,heading:null,navigation:0,query:'Text',occurrence:0,
+                    searchRequest:100,searchOpen:true,nativeSearchFocus:false};
+                window.readerConfigure(base);
+                if (!CSS.highlights.has('search') || !getSelection().toString())
+                    throw Error('Search must highlight and select a match');
+                window.readerConfigure({...base,query:'',searchOpen:false,searchRequest:101});
+                if (CSS.highlights.has('search') || getSelection().rangeCount)
+                    throw Error('Closing search must clear highlights and selection');
+                window.readerConfigure({...base,searchRequest:102});
+                if (!CSS.highlights.has('search') || !getSelection().toString())
+                    throw Error('Reopening search must restore the match');
+                window.readerConfigure({...base,query:'',searchOpen:false,searchRequest:103});
+            }""")
             page.emulate_media(color_scheme='dark')
             assert page.evaluate('getComputedStyle(document.documentElement).backgroundColor') == 'rgb(37, 35, 31)'
             if not args.poc:

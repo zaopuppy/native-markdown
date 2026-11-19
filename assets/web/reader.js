@@ -174,6 +174,9 @@ function showImage(image) {
   dialog.addEventListener('close',()=>{dialog.remove();if(imageDialog===dialog)imageDialog=undefined;});
 }
 document.addEventListener('keydown', event => {
+  if(event.key==='Enter' && state.searchOpen && !imageDialog && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    event.preventDefault(); notify('search-step',{backward:event.shiftKey}); return;
+  }
   if(event.key==='Escape' && !imageDialog) {notify('escape');return;}
   if(!event.ctrlKey || event.altKey) return;
   const key=event.key.toLowerCase();
