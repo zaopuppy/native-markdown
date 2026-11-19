@@ -158,7 +158,7 @@ pub fn search(markdown: &str, query: &str, headings: &[Heading]) -> Vec<SearchHi
     let mut image_depth = 0;
     let flush =
         |text: &mut String, positions: &mut Vec<Range<usize>>, hits: &mut Vec<SearchHit>| {
-            for range in gpui_component::text::search_ranges(text, query) {
+            for range in crate::search_ui::search_ranges(text, query) {
                 let offset = positions[range.start].start;
                 let source_end = positions[range.end - 1].end;
                 let (snippet, match_range) = search_snippet(text, range.start, range.len());

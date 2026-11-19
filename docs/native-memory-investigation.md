@@ -1,5 +1,7 @@
 # Native Markdown 内存诊断与优化记录（2026-08-31）
 
+> 历史记录：原生 Markdown/Mermaid 阅读实现、对应实验和基准入口已于 2026-11-19 退休。本文数据及命令仅描述当时版本；当前实现以 [阅读架构评估](markdown-rendering-evaluation.md) 为准。
+
 ## 结论摘要
 
 这次调查始于一个反直觉现象：Typora 使用 Electron，而运行一段时间的 Native Markdown 看起来占用了更多内存。最终结论不是“原生技术天然输给 Electron”，而是最初比较混入了进程生命周期、统计口径和应用行为差异。

@@ -1,0 +1,1144 @@
+{
+  "units": "bytes, milliseconds, percent of one logical core",
+  "batches": [
+    {
+      "environment": {
+        "date": "2026-11-19T12:08:11.7870143Z",
+        "binary": "E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe",
+        "binarySHA256": "B2FB863297947236C5DDC3CCFA3841598E3BA0DD6ABE0ACC84A365DD7C764A01",
+        "os": "Microsoft Windows NT 10.0.26300.0",
+        "logicalCPUs": 16,
+        "runtimeAlreadyInstalled": true,
+        "note": "WS includes shared pages: sum is NOT exclusive memory. PrivateWS is resident private memory; PrivateBytes is private commit. First window handle is NOT first readable paint. No OS cache flush.",
+        "rawSource": "tmp/webview-only-final.json"
+      },
+      "runs": [
+        {
+          "run": 1,
+          "scenario": "empty",
+          "windowHandleMs": 964.5152,
+          "peakPrivateBytes": 69017600,
+          "peakPrivateWS": 51208192,
+          "finalSampleMs": 12381.3366,
+          "idleCPUPercentOfOneCore": 1.7564197469616458,
+          "finalProcesses": [
+            {
+              "pid": 46744,
+              "parent": 35068,
+              "name": "native-markdown.exe",
+              "command": "\"E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe\"",
+              "path": "E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe",
+              "ws": 93855744,
+              "privateWS": 51208192,
+              "privateBytes": 69017600,
+              "cpuSeconds": 0.46875,
+              "role": "host"
+            }
+          ],
+          "events": [],
+          "stderr": ""
+        },
+        {
+          "run": 1,
+          "scenario": "ordinary",
+          "windowHandleMs": 741.0885,
+          "peakPrivateBytes": 244359168,
+          "peakPrivateWS": 165572608,
+          "finalSampleMs": 12244.6037,
+          "idleCPUPercentOfOneCore": 6.417110183097934,
+          "finalProcesses": [
+            {
+              "pid": 33988,
+              "parent": 35068,
+              "name": "native-markdown.exe",
+              "command": "\"E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe\" E:\\workspace\\native-markdown\\tests\\fixtures\\rendering\\ordinary.md",
+              "path": "E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe",
+              "ws": 103055360,
+              "privateWS": 53338112,
+              "privateBytes": 71864320,
+              "cpuSeconds": 0.6875,
+              "role": "host"
+            },
+            {
+              "pid": 45024,
+              "parent": 33988,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --embedded-browser-webview=1 --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --noerrdialogs --embedded-browser-webview-dpi-awareness=2 --autoplay-policy=no-user-gesture-required --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --lang=zh-CN --mojo-named-platform-channel-pipe=33988.48212.10930937662496435335 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 133521408,
+              "privateWS": 32989184,
+              "privateBytes": 41713664,
+              "cpuSeconds": 1.140625,
+              "role": "browser"
+            },
+            {
+              "pid": 55276,
+              "parent": 45024,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=crashpad-handler --user-data-dir=E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView /prefetch:4 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965 --monitor-self-annotation=ptype=crashpad-handler --user-stream-region=324,65568 --database=E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\\Crashpad --annotation=IsOfficialBuild=1 --annotation=channel= --annotation=chromium-version=157.0.8103.80 \"--annotation=exe=C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --annotation=plat=Win64 \"--annotation=prod=Edge WebView2\" --annotation=ver=157.0.4341.60 --initial-client-data=0x188,0x18c,0x190,0x164,0x198,0x7fffde50b3a0,0x7fffde50b3b0,0x7fffde50b3c0",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 11223040,
+              "privateWS": 1839104,
+              "privateBytes": 2965504,
+              "cpuSeconds": 0.046875,
+              "role": "crashpad-handler"
+            },
+            {
+              "pid": 54360,
+              "parent": 45024,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=gpu-process --gpu-recent-crash-count=0 --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --gpu-preferences=WAAAAAAAAABgAAACAAAAAAAAAAAAAGAAQAAAAAAAAAADAAAAAAAAADgAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAKAAAAAAAAAAoAAAAAAAAAAgAAAAAAAAAEAAAAAIAAAABAAAAAAAAAAgAAAAAAAAACAAAAAAAAAA= --startup-read-main-dll --metrics-shmem-handle=1812,i,12728888270312519995,16973593212662051246,262144 --field-trial-handle=1952,i,2370435248411842901,6630080939708560406,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1956,i,2407310510946224927,10951398391864649799,4 --trace-process-track-uuid=3190708988185955192 --mojo-platform-channel-handle=1944 /prefetch:2 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 99762176,
+              "privateWS": 43663360,
+              "privateBytes": 72683520,
+              "cpuSeconds": 0.234375,
+              "role": "gpu-process"
+            },
+            {
+              "pid": 57828,
+              "parent": 45024,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=utility --utility-sub-type=network.mojom.NetworkService --lang=zh-CN --service-sandbox-type=none --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --startup-read-main-dll --metrics-shmem-handle=2248,i,6358779066186726042,15603914544235478773,524288 --field-trial-handle=1952,i,2370435248411842901,6630080939708560406,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1956,i,2407310510946224927,10951398391864649799,4 --trace-process-track-uuid=3190708989122997041 --mojo-platform-channel-handle=2252 /prefetch:11 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 39825408,
+              "privateWS": 6811648,
+              "privateBytes": 12062720,
+              "cpuSeconds": 0.140625,
+              "role": "utility"
+            },
+            {
+              "pid": 52288,
+              "parent": 45024,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=utility --utility-sub-type=storage.mojom.StorageService --lang=zh-CN --service-sandbox-type=service --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --startup-read-main-dll --metrics-shmem-handle=2604,i,3598922933027952250,15252710781309866739,524288 --field-trial-handle=1952,i,2370435248411842901,6630080939708560406,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1956,i,2407310510946224927,10951398391864649799,4 --trace-process-track-uuid=3190708990060038890 --mojo-platform-channel-handle=2624 /prefetch:13 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 19968000,
+              "privateWS": 2859008,
+              "privateBytes": 7622656,
+              "cpuSeconds": 0.03125,
+              "role": "utility"
+            },
+            {
+              "pid": 56808,
+              "parent": 45024,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=renderer --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --autoplay-policy=no-user-gesture-required --video-capture-use-gpu-memory-buffer --lang=zh-CN --device-scale-factor=1 --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=5 --ssd-no-pressure-read-main-dll --launch-time-ticks=118048652238 --metrics-shmem-handle=3828,i,15662328560507142431,902296695251566193,1048576 --field-trial-handle=1952,i,2370435248411842901,6630080939708560406,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1956,i,2407310510946224927,10951398391864649799,4 --trace-process-track-uuid=3190708990997080739 --mojo-platform-channel-handle=3832 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965 /prefetch:1",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 68743168,
+              "privateWS": 17661952,
+              "privateBytes": 29159424,
+              "cpuSeconds": 0.140625,
+              "role": "renderer"
+            }
+          ],
+          "events": [
+            "READER_EVENT elapsed_ms=511 process_ms=785 body={\"kind\":\"ready\"}",
+            "READER_EVENT elapsed_ms=517 process_ms=791 body={\"kind\":\"document-readable\",\"ms\":4.200000002980232,\"revision\":1}"
+          ],
+          "stderr": ""
+        },
+        {
+          "run": 1,
+          "scenario": "mermaid",
+          "windowHandleMs": 823.9391,
+          "peakPrivateBytes": 329850880,
+          "peakPrivateWS": 247721984,
+          "finalSampleMs": 12194.5735,
+          "idleCPUPercentOfOneCore": 4.028104476232249,
+          "finalProcesses": [
+            {
+              "pid": 24516,
+              "parent": 35068,
+              "name": "native-markdown.exe",
+              "command": "\"E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe\" E:\\workspace\\native-markdown\\tests\\fixtures\\rendering\\mermaid.md",
+              "path": "E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe",
+              "ws": 108601344,
+              "privateWS": 53551104,
+              "privateBytes": 72105984,
+              "cpuSeconds": 0.734375,
+              "role": "host"
+            },
+            {
+              "pid": 12760,
+              "parent": 24516,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --embedded-browser-webview=1 --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --noerrdialogs --embedded-browser-webview-dpi-awareness=2 --autoplay-policy=no-user-gesture-required --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --lang=zh-CN --mojo-named-platform-channel-pipe=24516.42288.4218278520582444858 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 132288512,
+              "privateWS": 32129024,
+              "privateBytes": 41869312,
+              "cpuSeconds": 1.375,
+              "role": "browser"
+            },
+            {
+              "pid": 47220,
+              "parent": 12760,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=crashpad-handler --user-data-dir=E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView /prefetch:4 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965 --monitor-self-annotation=ptype=crashpad-handler --user-stream-region=280,65568 --database=E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\\Crashpad --annotation=IsOfficialBuild=1 --annotation=channel= --annotation=chromium-version=157.0.8103.80 \"--annotation=exe=C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --annotation=plat=Win64 \"--annotation=prod=Edge WebView2\" --annotation=ver=157.0.4341.60 --initial-client-data=0x184,0x188,0x18c,0x160,0x194,0x7fffde50b3a0,0x7fffde50b3b0,0x7fffde50b3c0",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 11227136,
+              "privateWS": 1843200,
+              "privateBytes": 2965504,
+              "cpuSeconds": 0.03125,
+              "role": "crashpad-handler"
+            },
+            {
+              "pid": 16248,
+              "parent": 12760,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=gpu-process --gpu-recent-crash-count=0 --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --gpu-preferences=WAAAAAAAAABgAAACAAAAAAAAAAAAAGAAQAAAAAAAAAADAAAAAAAAADgAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAKAAAAAAAAAAoAAAAAAAAAAgAAAAAAAAAEAAAAAIAAAABAAAAAAAAAAgAAAAAAAAACAAAAAAAAAA= --startup-read-main-dll --metrics-shmem-handle=1852,i,17924525917326396744,14659698387021832312,262144 --field-trial-handle=1984,i,13385625116470696195,11747667592164097627,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=2000,i,5788621057727558691,10389548549227937727,4 --trace-process-track-uuid=3190708988185955192 --mojo-platform-channel-handle=1976 /prefetch:2 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 108240896,
+              "privateWS": 54386688,
+              "privateBytes": 83689472,
+              "cpuSeconds": 0.34375,
+              "role": "gpu-process"
+            },
+            {
+              "pid": 30608,
+              "parent": 12760,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=utility --utility-sub-type=network.mojom.NetworkService --lang=zh-CN --service-sandbox-type=none --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --startup-read-main-dll --metrics-shmem-handle=2184,i,6223866586290507427,9041390185695606884,524288 --field-trial-handle=1984,i,13385625116470696195,11747667592164097627,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=2000,i,5788621057727558691,10389548549227937727,4 --trace-process-track-uuid=3190708989122997041 --mojo-platform-channel-handle=2224 /prefetch:11 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 41902080,
+              "privateWS": 7118848,
+              "privateBytes": 12414976,
+              "cpuSeconds": 0.125,
+              "role": "utility"
+            },
+            {
+              "pid": 55284,
+              "parent": 12760,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=utility --utility-sub-type=storage.mojom.StorageService --lang=zh-CN --service-sandbox-type=service --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --startup-read-main-dll --metrics-shmem-handle=2612,i,9829872927307797269,17029317937885735157,524288 --field-trial-handle=1984,i,13385625116470696195,11747667592164097627,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=2000,i,5788621057727558691,10389548549227937727,4 --trace-process-track-uuid=3190708990060038890 --mojo-platform-channel-handle=2468 /prefetch:13 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 20013056,
+              "privateWS": 2879488,
+              "privateBytes": 7643136,
+              "cpuSeconds": 0.09375,
+              "role": "utility"
+            },
+            {
+              "pid": 49188,
+              "parent": 12760,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=renderer --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --autoplay-policy=no-user-gesture-required --video-capture-use-gpu-memory-buffer --lang=zh-CN --device-scale-factor=1 --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=5 --ssd-no-pressure-read-main-dll --launch-time-ticks=118061397646 --metrics-shmem-handle=3804,i,14601629322394886143,2940341466004928159,1048576 --field-trial-handle=1984,i,13385625116470696195,11747667592164097627,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=2000,i,5788621057727558691,10389548549227937727,4 --trace-process-track-uuid=3190708990997080739 --mojo-platform-channel-handle=3708 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965 /prefetch:1",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 149131264,
+              "privateWS": 86405120,
+              "privateBytes": 99450880,
+              "cpuSeconds": 0.75,
+              "role": "renderer"
+            }
+          ],
+          "events": [
+            "READER_EVENT elapsed_ms=433 process_ms=731 body={\"kind\":\"ready\"}",
+            "READER_EVENT elapsed_ms=443 process_ms=740 body={\"kind\":\"document-readable\",\"ms\":7.5,\"revision\":1}",
+            "READER_EVENT elapsed_ms=637 process_ms=935 body={\"kind\":\"diagram-ready\",\"index\":0,\"ms\":199.20000000298023,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=718 process_ms=1016 body={\"kind\":\"diagram-ready\",\"index\":1,\"ms\":81.40000000596046,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=794 process_ms=1092 body={\"kind\":\"diagram-ready\",\"index\":2,\"ms\":75.69999998807907,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=870 process_ms=1168 body={\"kind\":\"diagram-ready\",\"index\":3,\"ms\":76.20000000298023,\"nodes\":311}"
+          ],
+          "stderr": ""
+        },
+        {
+          "run": 1,
+          "scenario": "large",
+          "windowHandleMs": 850.0707,
+          "peakPrivateBytes": 414261248,
+          "peakPrivateWS": 316383232,
+          "finalSampleMs": 12215.8864,
+          "idleCPUPercentOfOneCore": 10.777129723687809,
+          "finalProcesses": [
+            {
+              "pid": 45712,
+              "parent": 35068,
+              "name": "native-markdown.exe",
+              "command": "\"E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe\" E:\\workspace\\native-markdown\\tests\\fixtures\\rendering\\large.md",
+              "path": "E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe",
+              "ws": 218230784,
+              "privateWS": 168456192,
+              "privateBytes": 205385728,
+              "cpuSeconds": 1.0625,
+              "role": "host"
+            },
+            {
+              "pid": 48900,
+              "parent": 45712,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --embedded-browser-webview=1 --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --noerrdialogs --embedded-browser-webview-dpi-awareness=2 --autoplay-policy=no-user-gesture-required --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --lang=zh-CN --mojo-named-platform-channel-pipe=45712.54012.11669313251810675786 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 137850880,
+              "privateWS": 37756928,
+              "privateBytes": 46555136,
+              "cpuSeconds": 1.640625,
+              "role": "browser"
+            },
+            {
+              "pid": 48084,
+              "parent": 48900,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=crashpad-handler --user-data-dir=E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView /prefetch:4 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965 --monitor-self-annotation=ptype=crashpad-handler --user-stream-region=332,65568 --database=E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\\Crashpad --annotation=IsOfficialBuild=1 --annotation=channel= --annotation=chromium-version=157.0.8103.80 \"--annotation=exe=C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --annotation=plat=Win64 \"--annotation=prod=Edge WebView2\" --annotation=ver=157.0.4341.60 --initial-client-data=0x190,0x194,0x198,0x16c,0x114,0x7fffd98fb3a0,0x7fffd98fb3b0,0x7fffd98fb3c0",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 11227136,
+              "privateWS": 1843200,
+              "privateBytes": 2977792,
+              "cpuSeconds": 0.015625,
+              "role": "crashpad-handler"
+            },
+            {
+              "pid": 53860,
+              "parent": 48900,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=gpu-process --gpu-recent-crash-count=0 --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --gpu-preferences=WAAAAAAAAABgAAACAAAAAAAAAAAAAGAAQAAAAAAAAAADAAAAAAAAADgAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAKAAAAAAAAAAoAAAAAAAAAAgAAAAAAAAAEAAAAAIAAAABAAAAAAAAAAgAAAAAAAAACAAAAAAAAAA= --startup-read-main-dll --metrics-shmem-handle=1836,i,1629755499194829623,18173595923557857467,262144 --field-trial-handle=1924,i,2925841541817684071,12731021993107519322,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1940,i,2759957506625142750,13428619673898295718,4 --trace-process-track-uuid=3190708988185955192 --mojo-platform-channel-handle=1936 /prefetch:2 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 99545088,
+              "privateWS": 46886912,
+              "privateBytes": 75804672,
+              "cpuSeconds": 0.21875,
+              "role": "gpu-process"
+            },
+            {
+              "pid": 36760,
+              "parent": 48900,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=utility --utility-sub-type=network.mojom.NetworkService --lang=zh-CN --service-sandbox-type=none --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --startup-read-main-dll --metrics-shmem-handle=2180,i,16040292157785319046,5753035100725090692,524288 --field-trial-handle=1924,i,2925841541817684071,12731021993107519322,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1940,i,2759957506625142750,13428619673898295718,4 --trace-process-track-uuid=3190708989122997041 --mojo-platform-channel-handle=2208 /prefetch:11 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 39739392,
+              "privateWS": 6721536,
+              "privateBytes": 11948032,
+              "cpuSeconds": 0.15625,
+              "role": "utility"
+            },
+            {
+              "pid": 55964,
+              "parent": 48900,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=utility --utility-sub-type=storage.mojom.StorageService --lang=zh-CN --service-sandbox-type=service --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --startup-read-main-dll --metrics-shmem-handle=2192,i,3531907493485977360,11773259215131189821,524288 --field-trial-handle=1924,i,2925841541817684071,12731021993107519322,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1940,i,2759957506625142750,13428619673898295718,4 --trace-process-track-uuid=3190708990060038890 --mojo-platform-channel-handle=2592 /prefetch:13 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 19976192,
+              "privateWS": 2871296,
+              "privateBytes": 7639040,
+              "cpuSeconds": 0.046875,
+              "role": "utility"
+            },
+            {
+              "pid": 35084,
+              "parent": 48900,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=renderer --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --autoplay-policy=no-user-gesture-required --video-capture-use-gpu-memory-buffer --lang=zh-CN --device-scale-factor=1 --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=5 --ssd-no-pressure-read-main-dll --launch-time-ticks=118074202652 --metrics-shmem-handle=3756,i,13871114069105053727,12101491914302261642,1048576 --field-trial-handle=1924,i,2925841541817684071,12731021993107519322,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1940,i,2759957506625142750,13428619673898295718,4 --trace-process-track-uuid=3190708990997080739 --mojo-platform-channel-handle=3780 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965 /prefetch:1",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 100229120,
+              "privateWS": 48590848,
+              "privateBytes": 60690432,
+              "cpuSeconds": 0.21875,
+              "role": "renderer"
+            }
+          ],
+          "events": [
+            "READER_EVENT elapsed_ms=513 process_ms=924 body={\"kind\":\"ready\"}",
+            "READER_EVENT elapsed_ms=566 process_ms=977 body={\"kind\":\"document-readable\",\"ms\":46.79999999701977,\"revision\":1}"
+          ],
+          "stderr": ""
+        },
+        {
+          "run": 1,
+          "scenario": "reopen",
+          "windowHandleMs": 846.4302,
+          "peakPrivateBytes": 381063168,
+          "peakPrivateWS": 298721280,
+          "finalSampleMs": 11855.0841,
+          "idleCPUPercentOfOneCore": 1.7415514598641029,
+          "finalProcesses": [
+            {
+              "pid": 34248,
+              "parent": 35068,
+              "name": "native-markdown.exe",
+              "command": "\"E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe\" E:\\workspace\\native-markdown\\tests\\fixtures\\rendering\\ordinary.md",
+              "path": "E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe",
+              "ws": 111022080,
+              "privateWS": 55128064,
+              "privateBytes": 73764864,
+              "cpuSeconds": 1.203125,
+              "role": "host"
+            }
+          ],
+          "events": [
+            "READER_EVENT elapsed_ms=463 process_ms=782 body={\"kind\":\"ready\"}",
+            "READER_EVENT elapsed_ms=489 process_ms=808 body={\"kind\":\"document-readable\",\"ms\":25.899999991059303,\"revision\":1}",
+            "READER_SWITCH step=0 handler_ms=1",
+            "READER_SWITCH step=1 handler_ms=2",
+            "READER_EVENT elapsed_ms=2513 process_ms=2832 body={\"kind\":\"document-readable\",\"ms\":13.100000008940697,\"revision\":2}",
+            "READER_EVENT elapsed_ms=2719 process_ms=3037 body={\"kind\":\"diagram-ready\",\"index\":0,\"ms\":215.1000000089407,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=2808 process_ms=3127 body={\"kind\":\"diagram-ready\",\"index\":1,\"ms\":89.29999999701977,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=2905 process_ms=3224 body={\"kind\":\"diagram-ready\",\"index\":2,\"ms\":97.6000000089407,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=2996 process_ms=3315 body={\"kind\":\"diagram-ready\",\"index\":3,\"ms\":90.3999999910593,\"nodes\":311}",
+            "READER_SWITCH step=2 handler_ms=1",
+            "READER_EVENT elapsed_ms=3546 process_ms=3865 body={\"kind\":\"document-readable\",\"ms\":10.299999997019768,\"revision\":3}",
+            "READER_SWITCH step=3 handler_ms=3",
+            "READER_EVENT elapsed_ms=4595 process_ms=4914 body={\"kind\":\"document-readable\",\"ms\":43,\"revision\":4}",
+            "READER_EVENT elapsed_ms=4630 process_ms=4949 body={\"kind\":\"diagram-ready\",\"index\":0,\"ms\":74.20000000298023,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=4709 process_ms=5028 body={\"kind\":\"diagram-ready\",\"index\":1,\"ms\":79.40000000596046,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=4781 process_ms=5100 body={\"kind\":\"diagram-ready\",\"index\":2,\"ms\":72.20000000298023,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=4868 process_ms=5187 body={\"kind\":\"diagram-ready\",\"index\":3,\"ms\":86.79999999701977,\"nodes\":311}",
+            "READER_SWITCH step=4 handler_ms=1",
+            "READER_EVENT elapsed_ms=5594 process_ms=5912 body={\"kind\":\"document-readable\",\"ms\":19.600000008940697,\"revision\":5}",
+            "READER_SWITCH step=5 handler_ms=0"
+          ],
+          "stderr": ""
+        },
+        {
+          "run": 2,
+          "scenario": "empty",
+          "windowHandleMs": 841.5274,
+          "peakPrivateBytes": 69132288,
+          "peakPrivateWS": 51150848,
+          "finalSampleMs": 12182.0041,
+          "idleCPUPercentOfOneCore": 0.5914058529005399,
+          "finalProcesses": [
+            {
+              "pid": 36924,
+              "parent": 35068,
+              "name": "native-markdown.exe",
+              "command": "\"E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe\"",
+              "path": "E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe",
+              "ws": 93741056,
+              "privateWS": 51146752,
+              "privateBytes": 69050368,
+              "cpuSeconds": 0.390625,
+              "role": "host"
+            }
+          ],
+          "events": [],
+          "stderr": ""
+        },
+        {
+          "run": 2,
+          "scenario": "ordinary",
+          "windowHandleMs": 774.22,
+          "peakPrivateBytes": 242384896,
+          "peakPrivateWS": 163753984,
+          "finalSampleMs": 12264.4021,
+          "idleCPUPercentOfOneCore": 4.636564728390966,
+          "finalProcesses": [
+            {
+              "pid": 42152,
+              "parent": 35068,
+              "name": "native-markdown.exe",
+              "command": "\"E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe\" E:\\workspace\\native-markdown\\tests\\fixtures\\rendering\\ordinary.md",
+              "path": "E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe",
+              "ws": 103010304,
+              "privateWS": 53420032,
+              "privateBytes": 71757824,
+              "cpuSeconds": 0.59375,
+              "role": "host"
+            },
+            {
+              "pid": 53408,
+              "parent": 42152,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --embedded-browser-webview=1 --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --noerrdialogs --embedded-browser-webview-dpi-awareness=2 --autoplay-policy=no-user-gesture-required --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --lang=zh-CN --mojo-named-platform-channel-pipe=42152.37096.15495787474336606810 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 132202496,
+              "privateWS": 32063488,
+              "privateBytes": 40820736,
+              "cpuSeconds": 1.140625,
+              "role": "browser"
+            },
+            {
+              "pid": 45776,
+              "parent": 53408,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=crashpad-handler --user-data-dir=E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView /prefetch:4 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965 --monitor-self-annotation=ptype=crashpad-handler --user-stream-region=328,65568 --database=E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\\Crashpad --annotation=IsOfficialBuild=1 --annotation=channel= --annotation=chromium-version=157.0.8103.80 \"--annotation=exe=C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --annotation=plat=Win64 \"--annotation=prod=Edge WebView2\" --annotation=ver=157.0.4341.60 --initial-client-data=0x18c,0x190,0x194,0x168,0x60,0x7fffde50b3a0,0x7fffde50b3b0,0x7fffde50b3c0",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 11223040,
+              "privateWS": 1839104,
+              "privateBytes": 2965504,
+              "cpuSeconds": 0.015625,
+              "role": "crashpad-handler"
+            },
+            {
+              "pid": 48404,
+              "parent": 53408,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=gpu-process --gpu-recent-crash-count=0 --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --gpu-preferences=WAAAAAAAAABgAAACAAAAAAAAAAAAAGAAQAAAAAAAAAADAAAAAAAAADgAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAKAAAAAAAAAAoAAAAAAAAAAgAAAAAAAAAEAAAAAIAAAABAAAAAAAAAAgAAAAAAAAACAAAAAAAAAA= --startup-read-main-dll --metrics-shmem-handle=1612,i,15716501641878045310,4328143180019907021,262144 --field-trial-handle=1972,i,1988142343065445018,16918604862534837289,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1980,i,16185846941911908222,16135222780449887628,4 --trace-process-track-uuid=3190708988185955192 --mojo-platform-channel-handle=1960 /prefetch:2 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 99291136,
+              "privateWS": 46604288,
+              "privateBytes": 75517952,
+              "cpuSeconds": 0.265625,
+              "role": "gpu-process"
+            },
+            {
+              "pid": 57148,
+              "parent": 53408,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=utility --utility-sub-type=network.mojom.NetworkService --lang=zh-CN --service-sandbox-type=none --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --startup-read-main-dll --metrics-shmem-handle=2188,i,7207156459709559944,12422586731939064315,524288 --field-trial-handle=1972,i,1988142343065445018,16918604862534837289,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1980,i,16185846941911908222,16135222780449887628,4 --trace-process-track-uuid=3190708989122997041 --mojo-platform-channel-handle=2244 /prefetch:11 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 39780352,
+              "privateWS": 6762496,
+              "privateBytes": 12013568,
+              "cpuSeconds": 0.125,
+              "role": "utility"
+            },
+            {
+              "pid": 55620,
+              "parent": 53408,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=utility --utility-sub-type=storage.mojom.StorageService --lang=zh-CN --service-sandbox-type=service --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --startup-read-main-dll --metrics-shmem-handle=2616,i,14574621647944375293,967696966278825093,524288 --field-trial-handle=1972,i,1988142343065445018,16918604862534837289,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1980,i,16185846941911908222,16135222780449887628,4 --trace-process-track-uuid=3190708990060038890 --mojo-platform-channel-handle=2628 /prefetch:13 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 20008960,
+              "privateWS": 2875392,
+              "privateBytes": 7634944,
+              "cpuSeconds": 0.046875,
+              "role": "utility"
+            },
+            {
+              "pid": 52208,
+              "parent": 53408,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=renderer --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --autoplay-policy=no-user-gesture-required --video-capture-use-gpu-memory-buffer --lang=zh-CN --device-scale-factor=1 --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=5 --ssd-no-pressure-read-main-dll --launch-time-ticks=118111512417 --metrics-shmem-handle=3776,i,15268637407108025893,1905415495310109981,1048576 --field-trial-handle=1972,i,1988142343065445018,16918604862534837289,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1980,i,16185846941911908222,16135222780449887628,4 --trace-process-track-uuid=3190708990997080739 --mojo-platform-channel-handle=3804 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965 /prefetch:1",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 68808704,
+              "privateWS": 17731584,
+              "privateBytes": 29184000,
+              "cpuSeconds": 0.109375,
+              "role": "renderer"
+            }
+          ],
+          "events": [
+            "READER_EVENT elapsed_ms=409 process_ms=652 body={\"kind\":\"ready\"}",
+            "READER_EVENT elapsed_ms=415 process_ms=658 body={\"kind\":\"document-readable\",\"ms\":3.5,\"revision\":1}"
+          ],
+          "stderr": ""
+        },
+        {
+          "run": 2,
+          "scenario": "mermaid",
+          "windowHandleMs": 793.41,
+          "peakPrivateBytes": 330338304,
+          "peakPrivateWS": 249810944,
+          "finalSampleMs": 12104.3659,
+          "idleCPUPercentOfOneCore": 10.720240859131724,
+          "finalProcesses": [
+            {
+              "pid": 57576,
+              "parent": 35068,
+              "name": "native-markdown.exe",
+              "command": "\"E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe\" E:\\workspace\\native-markdown\\tests\\fixtures\\rendering\\mermaid.md",
+              "path": "E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe",
+              "ws": 108335104,
+              "privateWS": 53239808,
+              "privateBytes": 71856128,
+              "cpuSeconds": 0.796875,
+              "role": "host"
+            },
+            {
+              "pid": 55672,
+              "parent": 57576,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --embedded-browser-webview=1 --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --noerrdialogs --embedded-browser-webview-dpi-awareness=2 --autoplay-policy=no-user-gesture-required --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --lang=zh-CN --mojo-named-platform-channel-pipe=57576.50420.2464731309745950574 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 132960256,
+              "privateWS": 32555008,
+              "privateBytes": 41263104,
+              "cpuSeconds": 1.375,
+              "role": "browser"
+            },
+            {
+              "pid": 57488,
+              "parent": 55672,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=crashpad-handler --user-data-dir=E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView /prefetch:4 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965 --monitor-self-annotation=ptype=crashpad-handler --user-stream-region=320,65568 --database=E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\\Crashpad --annotation=IsOfficialBuild=1 --annotation=channel= --annotation=chromium-version=157.0.8103.80 \"--annotation=exe=C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --annotation=plat=Win64 \"--annotation=prod=Edge WebView2\" --annotation=ver=157.0.4341.60 --initial-client-data=0x184,0x188,0x18c,0x160,0x194,0x7fffde50b3a0,0x7fffde50b3b0,0x7fffde50b3c0",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 11214848,
+              "privateWS": 1835008,
+              "privateBytes": 2953216,
+              "cpuSeconds": 0.03125,
+              "role": "crashpad-handler"
+            },
+            {
+              "pid": 47012,
+              "parent": 55672,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=gpu-process --gpu-recent-crash-count=0 --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --gpu-preferences=WAAAAAAAAABgAAACAAAAAAAAAAAAAGAAQAAAAAAAAAADAAAAAAAAADgAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAKAAAAAAAAAAoAAAAAAAAAAgAAAAAAAAAEAAAAAIAAAABAAAAAAAAAAgAAAAAAAAACAAAAAAAAAA= --startup-read-main-dll --metrics-shmem-handle=1844,i,14040757830466434333,18310587306401281649,262144 --field-trial-handle=1984,i,9958417242942750499,10511406668479019431,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1988,i,6473650368750365317,18311162793038717405,4 --trace-process-track-uuid=3190708988185955192 --mojo-platform-channel-handle=1856 /prefetch:2 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 108425216,
+              "privateWS": 54579200,
+              "privateBytes": 83881984,
+              "cpuSeconds": 0.34375,
+              "role": "gpu-process"
+            },
+            {
+              "pid": 29472,
+              "parent": 55672,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=utility --utility-sub-type=network.mojom.NetworkService --lang=zh-CN --service-sandbox-type=none --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --startup-read-main-dll --metrics-shmem-handle=2248,i,16048795605072740231,18301876597650241785,524288 --field-trial-handle=1984,i,9958417242942750499,10511406668479019431,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1988,i,6473650368750365317,18311162793038717405,4 --trace-process-track-uuid=3190708989122997041 --mojo-platform-channel-handle=2252 /prefetch:11 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 39723008,
+              "privateWS": 6709248,
+              "privateBytes": 11948032,
+              "cpuSeconds": 0.15625,
+              "role": "utility"
+            },
+            {
+              "pid": 57664,
+              "parent": 55672,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=utility --utility-sub-type=storage.mojom.StorageService --lang=zh-CN --service-sandbox-type=service --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --startup-read-main-dll --metrics-shmem-handle=2660,i,11720277248064874226,10873195240529795055,524288 --field-trial-handle=1984,i,9958417242942750499,10511406668479019431,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1988,i,6473650368750365317,18311162793038717405,4 --trace-process-track-uuid=3190708990060038890 --mojo-platform-channel-handle=2008 /prefetch:13 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 20000768,
+              "privateWS": 2875392,
+              "privateBytes": 7639040,
+              "cpuSeconds": 0.0625,
+              "role": "utility"
+            },
+            {
+              "pid": 58052,
+              "parent": 55672,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=renderer --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --autoplay-policy=no-user-gesture-required --video-capture-use-gpu-memory-buffer --lang=zh-CN --device-scale-factor=1 --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=5 --ssd-no-pressure-read-main-dll --launch-time-ticks=118124364586 --metrics-shmem-handle=3820,i,7532385445888381467,14899512514831438408,1048576 --field-trial-handle=1984,i,9958417242942750499,10511406668479019431,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1988,i,6473650368750365317,18311162793038717405,4 --trace-process-track-uuid=3190708990997080739 --mojo-platform-channel-handle=3804 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965 /prefetch:1",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 151732224,
+              "privateWS": 89108480,
+              "privateBytes": 101658624,
+              "cpuSeconds": 0.8125,
+              "role": "renderer"
+            }
+          ],
+          "events": [
+            "READER_EVENT elapsed_ms=428 process_ms=721 body={\"kind\":\"ready\"}",
+            "READER_EVENT elapsed_ms=442 process_ms=734 body={\"kind\":\"document-readable\",\"ms\":12,\"revision\":1}",
+            "READER_EVENT elapsed_ms=650 process_ms=943 body={\"kind\":\"diagram-ready\",\"index\":0,\"ms\":208.70000000298023,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=736 process_ms=1028 body={\"kind\":\"diagram-ready\",\"index\":1,\"ms\":85.5,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=809 process_ms=1101 body={\"kind\":\"diagram-ready\",\"index\":2,\"ms\":72.79999999701977,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=882 process_ms=1174 body={\"kind\":\"diagram-ready\",\"index\":3,\"ms\":73.1000000089407,\"nodes\":311}"
+          ],
+          "stderr": ""
+        },
+        {
+          "run": 2,
+          "scenario": "large",
+          "windowHandleMs": 807.2608,
+          "peakPrivateBytes": 414179328,
+          "peakPrivateWS": 316211200,
+          "finalSampleMs": 12234.1833,
+          "idleCPUPercentOfOneCore": 8.676397311806861,
+          "finalProcesses": [
+            {
+              "pid": 25632,
+              "parent": 35068,
+              "name": "native-markdown.exe",
+              "command": "\"E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe\" E:\\workspace\\native-markdown\\tests\\fixtures\\rendering\\large.md",
+              "path": "E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe",
+              "ws": 217268224,
+              "privateWS": 167567360,
+              "privateBytes": 204685312,
+              "cpuSeconds": 0.953125,
+              "role": "host"
+            },
+            {
+              "pid": 56584,
+              "parent": 25632,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --embedded-browser-webview=1 --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --noerrdialogs --embedded-browser-webview-dpi-awareness=2 --autoplay-policy=no-user-gesture-required --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --lang=zh-CN --mojo-named-platform-channel-pipe=25632.56844.199261929564988289 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 138579968,
+              "privateWS": 38473728,
+              "privateBytes": 47226880,
+              "cpuSeconds": 1.484375,
+              "role": "browser"
+            },
+            {
+              "pid": 54224,
+              "parent": 56584,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=crashpad-handler --user-data-dir=E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView /prefetch:4 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965 --monitor-self-annotation=ptype=crashpad-handler --user-stream-region=320,65568 --database=E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\\Crashpad --annotation=IsOfficialBuild=1 --annotation=channel= --annotation=chromium-version=157.0.8103.80 \"--annotation=exe=C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --annotation=plat=Win64 \"--annotation=prod=Edge WebView2\" --annotation=ver=157.0.4341.60 --initial-client-data=0x184,0x188,0x18c,0x160,0x194,0x7fffde50b3a0,0x7fffde50b3b0,0x7fffde50b3c0",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 11227136,
+              "privateWS": 1843200,
+              "privateBytes": 2965504,
+              "cpuSeconds": 0.0,
+              "role": "crashpad-handler"
+            },
+            {
+              "pid": 57404,
+              "parent": 56584,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=gpu-process --gpu-recent-crash-count=0 --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --gpu-preferences=WAAAAAAAAABgAAACAAAAAAAAAAAAAGAAQAAAAAAAAAADAAAAAAAAADgAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAKAAAAAAAAAAoAAAAAAAAAAgAAAAAAAAAEAAAAAIAAAABAAAAAAAAAAgAAAAAAAAACAAAAAAAAAA= --startup-read-main-dll --metrics-shmem-handle=1800,i,7343051665653376780,2166864705408989700,262144 --field-trial-handle=1940,i,8283769326080529300,8416480973801764880,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1988,i,10956426753230437494,9099777604594274838,4 --trace-process-track-uuid=3190708988185955192 --mojo-platform-channel-handle=1936 /prefetch:2 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 99545088,
+              "privateWS": 46837760,
+              "privateBytes": 75788288,
+              "cpuSeconds": 0.296875,
+              "role": "gpu-process"
+            },
+            {
+              "pid": 19724,
+              "parent": 56584,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=utility --utility-sub-type=network.mojom.NetworkService --lang=zh-CN --service-sandbox-type=none --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --startup-read-main-dll --metrics-shmem-handle=1976,i,14356756915157943999,7821922427212070808,524288 --field-trial-handle=1940,i,8283769326080529300,8416480973801764880,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1988,i,10956426753230437494,9099777604594274838,4 --trace-process-track-uuid=3190708989122997041 --mojo-platform-channel-handle=2100 /prefetch:11 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 39723008,
+              "privateWS": 6717440,
+              "privateBytes": 11935744,
+              "cpuSeconds": 0.140625,
+              "role": "utility"
+            },
+            {
+              "pid": 56644,
+              "parent": 56584,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=utility --utility-sub-type=storage.mojom.StorageService --lang=zh-CN --service-sandbox-type=service --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --startup-read-main-dll --metrics-shmem-handle=2580,i,17457990451256917319,4310688318149562686,524288 --field-trial-handle=1940,i,8283769326080529300,8416480973801764880,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1988,i,10956426753230437494,9099777604594274838,4 --trace-process-track-uuid=3190708990060038890 --mojo-platform-channel-handle=2600 /prefetch:13 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 20000768,
+              "privateWS": 2875392,
+              "privateBytes": 7643136,
+              "cpuSeconds": 0.0625,
+              "role": "utility"
+            },
+            {
+              "pid": 16820,
+              "parent": 56584,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=renderer --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --autoplay-policy=no-user-gesture-required --video-capture-use-gpu-memory-buffer --lang=zh-CN --device-scale-factor=1 --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=5 --ssd-no-pressure-read-main-dll --launch-time-ticks=118137113549 --metrics-shmem-handle=3780,i,5645167999725585487,11233672289916250505,1048576 --field-trial-handle=1940,i,8283769326080529300,8416480973801764880,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1988,i,10956426753230437494,9099777604594274838,4 --trace-process-track-uuid=3190708990997080739 --mojo-platform-channel-handle=3796 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965 /prefetch:1",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 100253696,
+              "privateWS": 48623616,
+              "privateBytes": 60731392,
+              "cpuSeconds": 0.234375,
+              "role": "renderer"
+            }
+          ],
+          "events": [
+            "READER_EVENT elapsed_ms=510 process_ms=921 body={\"kind\":\"ready\"}",
+            "READER_EVENT elapsed_ms=564 process_ms=976 body={\"kind\":\"document-readable\",\"ms\":46.900000005960464,\"revision\":1}"
+          ],
+          "stderr": ""
+        },
+        {
+          "run": 2,
+          "scenario": "reopen",
+          "windowHandleMs": 866.8607,
+          "peakPrivateBytes": 381759488,
+          "peakPrivateWS": 298610688,
+          "finalSampleMs": 12257.1106,
+          "idleCPUPercentOfOneCore": 2.3097662645887147,
+          "finalProcesses": [
+            {
+              "pid": 46976,
+              "parent": 35068,
+              "name": "native-markdown.exe",
+              "command": "\"E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe\" E:\\workspace\\native-markdown\\tests\\fixtures\\rendering\\ordinary.md",
+              "path": "E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe",
+              "ws": 111108096,
+              "privateWS": 55193600,
+              "privateBytes": 73625600,
+              "cpuSeconds": 1.03125,
+              "role": "host"
+            }
+          ],
+          "events": [
+            "READER_EVENT elapsed_ms=515 process_ms=875 body={\"kind\":\"ready\"}",
+            "READER_EVENT elapsed_ms=528 process_ms=888 body={\"kind\":\"document-readable\",\"ms\":13.200000002980232,\"revision\":1}",
+            "READER_SWITCH step=0 handler_ms=1",
+            "READER_SWITCH step=1 handler_ms=3",
+            "READER_EVENT elapsed_ms=2529 process_ms=2889 body={\"kind\":\"document-readable\",\"ms\":21.299999997019768,\"revision\":2}",
+            "READER_EVENT elapsed_ms=2708 process_ms=3068 body={\"kind\":\"diagram-ready\",\"index\":0,\"ms\":193.5,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=2787 process_ms=3147 body={\"kind\":\"diagram-ready\",\"index\":1,\"ms\":78.40000000596046,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=2865 process_ms=3225 body={\"kind\":\"diagram-ready\",\"index\":2,\"ms\":78.5,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=2947 process_ms=3306 body={\"kind\":\"diagram-ready\",\"index\":3,\"ms\":81.20000000298023,\"nodes\":311}",
+            "READER_SWITCH step=2 handler_ms=1",
+            "READER_EVENT elapsed_ms=3545 process_ms=3904 body={\"kind\":\"document-readable\",\"ms\":8.600000008940697,\"revision\":3}",
+            "READER_SWITCH step=3 handler_ms=2",
+            "READER_EVENT elapsed_ms=4593 process_ms=4953 body={\"kind\":\"document-readable\",\"ms\":36.599999994039536,\"revision\":4}",
+            "READER_EVENT elapsed_ms=4635 process_ms=4994 body={\"kind\":\"diagram-ready\",\"index\":0,\"ms\":74.79999999701977,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=4706 process_ms=5065 body={\"kind\":\"diagram-ready\",\"index\":1,\"ms\":71.20000000298023,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=4767 process_ms=5127 body={\"kind\":\"diagram-ready\",\"index\":2,\"ms\":61.79999999701977,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=4847 process_ms=5207 body={\"kind\":\"diagram-ready\",\"index\":3,\"ms\":79.3999999910593,\"nodes\":311}",
+            "READER_SWITCH step=4 handler_ms=1",
+            "READER_EVENT elapsed_ms=5595 process_ms=5955 body={\"kind\":\"document-readable\",\"ms\":17,\"revision\":5}",
+            "READER_SWITCH step=5 handler_ms=0"
+          ],
+          "stderr": ""
+        },
+        {
+          "run": 3,
+          "scenario": "empty",
+          "windowHandleMs": 894.0747,
+          "peakPrivateBytes": 69099520,
+          "peakPrivateWS": 51109888,
+          "finalSampleMs": 12440.6535,
+          "idleCPUPercentOfOneCore": 1.7768612522112675,
+          "finalProcesses": [
+            {
+              "pid": 50420,
+              "parent": 35068,
+              "name": "native-markdown.exe",
+              "command": "\"E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe\"",
+              "path": "E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe",
+              "ws": 93741056,
+              "privateWS": 51109888,
+              "privateBytes": 69017600,
+              "cpuSeconds": 0.53125,
+              "role": "host"
+            }
+          ],
+          "events": [],
+          "stderr": ""
+        },
+        {
+          "run": 3,
+          "scenario": "ordinary",
+          "windowHandleMs": 816.6423,
+          "peakPrivateBytes": 247447552,
+          "peakPrivateWS": 168480768,
+          "finalSampleMs": 12648.3331,
+          "idleCPUPercentOfOneCore": 9.578314026337019,
+          "finalProcesses": [
+            {
+              "pid": 57204,
+              "parent": 35068,
+              "name": "native-markdown.exe",
+              "command": "\"E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe\" E:\\workspace\\native-markdown\\tests\\fixtures\\rendering\\ordinary.md",
+              "path": "E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe",
+              "ws": 103673856,
+              "privateWS": 54018048,
+              "privateBytes": 72634368,
+              "cpuSeconds": 0.8125,
+              "role": "host"
+            },
+            {
+              "pid": 55572,
+              "parent": 57204,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --embedded-browser-webview=1 --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --noerrdialogs --embedded-browser-webview-dpi-awareness=2 --autoplay-policy=no-user-gesture-required --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --lang=zh-CN --mojo-named-platform-channel-pipe=57204.44468.8613416061432932266 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 134094848,
+              "privateWS": 33714176,
+              "privateBytes": 42438656,
+              "cpuSeconds": 1.828125,
+              "role": "browser"
+            },
+            {
+              "pid": 54976,
+              "parent": 55572,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=crashpad-handler --user-data-dir=E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView /prefetch:4 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965 --monitor-self-annotation=ptype=crashpad-handler --user-stream-region=324,65568 --database=E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\\Crashpad --annotation=IsOfficialBuild=1 --annotation=channel= --annotation=chromium-version=157.0.8103.80 \"--annotation=exe=C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --annotation=plat=Win64 \"--annotation=prod=Edge WebView2\" --annotation=ver=157.0.4341.60 --initial-client-data=0x188,0x18c,0x190,0x164,0x114,0x7fffde50b3a0,0x7fffde50b3b0,0x7fffde50b3c0",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 11231232,
+              "privateWS": 1847296,
+              "privateBytes": 2969600,
+              "cpuSeconds": 0.03125,
+              "role": "crashpad-handler"
+            },
+            {
+              "pid": 49852,
+              "parent": 55572,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=gpu-process --gpu-recent-crash-count=0 --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --gpu-preferences=WAAAAAAAAABgAAACAAAAAAAAAAAAAGAAQAAAAAAAAAADAAAAAAAAADgAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAKAAAAAAAAAAoAAAAAAAAAAgAAAAAAAAAEAAAAAIAAAABAAAAAAAAAAgAAAAAAAAACAAAAAAAAAA= --startup-read-main-dll --metrics-shmem-handle=1844,i,4275402172808636326,18334824248655565473,262144 --field-trial-handle=2016,i,14543462647944672444,1211003100303675515,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=2036,i,1452442476483029879,14655218532433870095,4 --trace-process-track-uuid=3190708988185955192 --mojo-platform-channel-handle=2008 /prefetch:2 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 99508224,
+              "privateWS": 46837760,
+              "privateBytes": 75780096,
+              "cpuSeconds": 0.21875,
+              "role": "gpu-process"
+            },
+            {
+              "pid": 50008,
+              "parent": 55572,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=utility --utility-sub-type=network.mojom.NetworkService --lang=zh-CN --service-sandbox-type=none --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --startup-read-main-dll --metrics-shmem-handle=2248,i,8897986920722311049,1704502172028492599,524288 --field-trial-handle=2016,i,14543462647944672444,1211003100303675515,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=2036,i,1452442476483029879,14655218532433870095,4 --trace-process-track-uuid=3190708989122997041 --mojo-platform-channel-handle=2240 /prefetch:11 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 39813120,
+              "privateWS": 6799360,
+              "privateBytes": 12058624,
+              "cpuSeconds": 0.15625,
+              "role": "utility"
+            },
+            {
+              "pid": 57804,
+              "parent": 55572,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=utility --utility-sub-type=storage.mojom.StorageService --lang=zh-CN --service-sandbox-type=service --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --startup-read-main-dll --metrics-shmem-handle=2592,i,5924456142255540808,15778412400505179350,524288 --field-trial-handle=2016,i,14543462647944672444,1211003100303675515,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=2036,i,1452442476483029879,14655218532433870095,4 --trace-process-track-uuid=3190708990060038890 --mojo-platform-channel-handle=2604 /prefetch:13 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 19984384,
+              "privateWS": 2859008,
+              "privateBytes": 7626752,
+              "cpuSeconds": 0.0625,
+              "role": "utility"
+            },
+            {
+              "pid": 39112,
+              "parent": 55572,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=renderer --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --autoplay-policy=no-user-gesture-required --video-capture-use-gpu-memory-buffer --lang=zh-CN --device-scale-factor=1 --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=5 --ssd-no-pressure-read-main-dll --launch-time-ticks=118175344191 --metrics-shmem-handle=3764,i,7688291171249485209,14610652318883298937,1048576 --field-trial-handle=2016,i,14543462647944672444,1211003100303675515,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=2036,i,1452442476483029879,14655218532433870095,4 --trace-process-track-uuid=3190708990997080739 --mojo-platform-channel-handle=3792 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965 /prefetch:1",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 71548928,
+              "privateWS": 20504576,
+              "privateBytes": 32026624,
+              "cpuSeconds": 0.140625,
+              "role": "renderer"
+            }
+          ],
+          "events": [
+            "READER_EVENT elapsed_ms=485 process_ms=813 body={\"kind\":\"ready\"}",
+            "READER_EVENT elapsed_ms=490 process_ms=817 body={\"kind\":\"document-readable\",\"ms\":3.7999999970197678,\"revision\":1}"
+          ],
+          "stderr": ""
+        },
+        {
+          "run": 3,
+          "scenario": "mermaid",
+          "windowHandleMs": 835.0538,
+          "peakPrivateBytes": 328826880,
+          "peakPrivateWS": 246603776,
+          "finalSampleMs": 11832.7794,
+          "idleCPUPercentOfOneCore": 9.016550094094915,
+          "finalProcesses": [
+            {
+              "pid": 9416,
+              "parent": 35068,
+              "name": "native-markdown.exe",
+              "command": "\"E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe\" E:\\workspace\\native-markdown\\tests\\fixtures\\rendering\\mermaid.md",
+              "path": "E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe",
+              "ws": 108351488,
+              "privateWS": 53284864,
+              "privateBytes": 71950336,
+              "cpuSeconds": 0.78125,
+              "role": "host"
+            },
+            {
+              "pid": 46424,
+              "parent": 9416,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --embedded-browser-webview=1 --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --noerrdialogs --embedded-browser-webview-dpi-awareness=2 --autoplay-policy=no-user-gesture-required --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --lang=zh-CN --mojo-named-platform-channel-pipe=9416.12384.2011605583889250994 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 133574656,
+              "privateWS": 33222656,
+              "privateBytes": 43008000,
+              "cpuSeconds": 1.734375,
+              "role": "browser"
+            },
+            {
+              "pid": 55120,
+              "parent": 46424,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=crashpad-handler --user-data-dir=E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView /prefetch:4 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965 --monitor-self-annotation=ptype=crashpad-handler --user-stream-region=340,65568 --database=E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\\Crashpad --annotation=IsOfficialBuild=1 --annotation=channel= --annotation=chromium-version=157.0.8103.80 \"--annotation=exe=C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --annotation=plat=Win64 \"--annotation=prod=Edge WebView2\" --annotation=ver=157.0.4341.60 --initial-client-data=0x198,0x19c,0x1a0,0x174,0x118,0x7fffde50b3a0,0x7fffde50b3b0,0x7fffde50b3c0",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 11227136,
+              "privateWS": 1843200,
+              "privateBytes": 2965504,
+              "cpuSeconds": 0.03125,
+              "role": "crashpad-handler"
+            },
+            {
+              "pid": 9484,
+              "parent": 46424,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=gpu-process --gpu-recent-crash-count=0 --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --gpu-preferences=WAAAAAAAAABgAAACAAAAAAAAAAAAAGAAQAAAAAAAAAADAAAAAAAAADgAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAKAAAAAAAAAAoAAAAAAAAAAgAAAAAAAAAEAAAAAIAAAABAAAAAAAAAAgAAAAAAAAACAAAAAAAAAA= --startup-read-main-dll --metrics-shmem-handle=1824,i,8238140719887906819,5609878969103533842,262144 --field-trial-handle=1992,i,972127214923651181,10061691399370035245,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1996,i,12635509199564003002,4310591670549650359,4 --trace-process-track-uuid=3190708988185955192 --mojo-platform-channel-handle=1980 /prefetch:2 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 108138496,
+              "privateWS": 54353920,
+              "privateBytes": 83677184,
+              "cpuSeconds": 0.28125,
+              "role": "gpu-process"
+            },
+            {
+              "pid": 48600,
+              "parent": 46424,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=utility --utility-sub-type=network.mojom.NetworkService --lang=zh-CN --service-sandbox-type=none --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --startup-read-main-dll --metrics-shmem-handle=2120,i,7935145045214310028,8549169620210940431,524288 --field-trial-handle=1992,i,972127214923651181,10061691399370035245,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1996,i,12635509199564003002,4310591670549650359,4 --trace-process-track-uuid=3190708989122997041 --mojo-platform-channel-handle=1960 /prefetch:11 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 39772160,
+              "privateWS": 6770688,
+              "privateBytes": 12029952,
+              "cpuSeconds": 0.140625,
+              "role": "utility"
+            },
+            {
+              "pid": 45904,
+              "parent": 46424,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=utility --utility-sub-type=storage.mojom.StorageService --lang=zh-CN --service-sandbox-type=service --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --startup-read-main-dll --metrics-shmem-handle=2592,i,8174623447970691035,10263432508308938178,524288 --field-trial-handle=1992,i,972127214923651181,10061691399370035245,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1996,i,12635509199564003002,4310591670549650359,4 --trace-process-track-uuid=3190708990060038890 --mojo-platform-channel-handle=2608 /prefetch:13 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 20013056,
+              "privateWS": 2859008,
+              "privateBytes": 7614464,
+              "cpuSeconds": 0.046875,
+              "role": "utility"
+            },
+            {
+              "pid": 57948,
+              "parent": 46424,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=renderer --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --autoplay-policy=no-user-gesture-required --video-capture-use-gpu-memory-buffer --lang=zh-CN --device-scale-factor=1 --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=5 --ssd-no-pressure-read-main-dll --launch-time-ticks=118188573890 --metrics-shmem-handle=3768,i,6166813177074507453,13841110696521208437,1048576 --field-trial-handle=1992,i,972127214923651181,10061691399370035245,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=1996,i,12635509199564003002,4310591670549650359,4 --trace-process-track-uuid=3190708990997080739 --mojo-platform-channel-handle=3756 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965 /prefetch:1",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 149008384,
+              "privateWS": 86286336,
+              "privateBytes": 99315712,
+              "cpuSeconds": 0.921875,
+              "role": "renderer"
+            }
+          ],
+          "events": [
+            "READER_EVENT elapsed_ms=532 process_ms=838 body={\"kind\":\"ready\"}",
+            "READER_EVENT elapsed_ms=545 process_ms=851 body={\"kind\":\"document-readable\",\"ms\":13.200000002980232,\"revision\":1}",
+            "READER_EVENT elapsed_ms=792 process_ms=1098 body={\"kind\":\"diagram-ready\",\"index\":0,\"ms\":256.80000001192093,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=880 process_ms=1186 body={\"kind\":\"diagram-ready\",\"index\":1,\"ms\":88.19999998807907,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=960 process_ms=1266 body={\"kind\":\"diagram-ready\",\"index\":2,\"ms\":79.8999999910593,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=1037 process_ms=1343 body={\"kind\":\"diagram-ready\",\"index\":3,\"ms\":76.79999999701977,\"nodes\":311}"
+          ],
+          "stderr": ""
+        },
+        {
+          "run": 3,
+          "scenario": "large",
+          "windowHandleMs": 892.2872,
+          "peakPrivateBytes": 416063488,
+          "peakPrivateWS": 319094784,
+          "finalSampleMs": 12222.056,
+          "idleCPUPercentOfOneCore": 5.94163372529863,
+          "finalProcesses": [
+            {
+              "pid": 10416,
+              "parent": 35068,
+              "name": "native-markdown.exe",
+              "command": "\"E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe\" E:\\workspace\\native-markdown\\tests\\fixtures\\rendering\\large.md",
+              "path": "E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe",
+              "ws": 219959296,
+              "privateWS": 170332160,
+              "privateBytes": 207704064,
+              "cpuSeconds": 1.09375,
+              "role": "host"
+            },
+            {
+              "pid": 15996,
+              "parent": 10416,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --embedded-browser-webview=1 --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --noerrdialogs --embedded-browser-webview-dpi-awareness=2 --autoplay-policy=no-user-gesture-required --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --lang=zh-CN --mojo-named-platform-channel-pipe=10416.44204.13586805027356898679 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 137543680,
+              "privateWS": 37355520,
+              "privateBytes": 46120960,
+              "cpuSeconds": 2.046875,
+              "role": "browser"
+            },
+            {
+              "pid": 54644,
+              "parent": 15996,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=crashpad-handler --user-data-dir=E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView /prefetch:4 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965 --monitor-self-annotation=ptype=crashpad-handler --user-stream-region=320,65568 --database=E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\\Crashpad --annotation=IsOfficialBuild=1 --annotation=channel= --annotation=chromium-version=157.0.8103.80 \"--annotation=exe=C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --annotation=plat=Win64 \"--annotation=prod=Edge WebView2\" --annotation=ver=157.0.4341.60 --initial-client-data=0x184,0x188,0x18c,0x160,0x194,0x7fffd98fb3a0,0x7fffd98fb3b0,0x7fffd98fb3c0",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 11231232,
+              "privateWS": 1843200,
+              "privateBytes": 2969600,
+              "cpuSeconds": 0.015625,
+              "role": "crashpad-handler"
+            },
+            {
+              "pid": 29536,
+              "parent": 15996,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=gpu-process --gpu-recent-crash-count=0 --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --gpu-preferences=WAAAAAAAAABgAAACAAAAAAAAAAAAAGAAQAAAAAAAAAADAAAAAAAAADgAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAKAAAAAAAAAAoAAAAAAAAAAgAAAAAAAAAEAAAAAIAAAABAAAAAAAAAAgAAAAAAAAACAAAAAAAAAA= --startup-read-main-dll --metrics-shmem-handle=1840,i,12602355252456539143,3649354313603691126,262144 --field-trial-handle=1996,i,669767123212459159,2845469719643077501,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=2012,i,17868426098428066936,1168160328482639899,4 --trace-process-track-uuid=3190708988185955192 --mojo-platform-channel-handle=1988 /prefetch:2 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 99975168,
+              "privateWS": 47271936,
+              "privateBytes": 76201984,
+              "cpuSeconds": 0.265625,
+              "role": "gpu-process"
+            },
+            {
+              "pid": 35760,
+              "parent": 15996,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=utility --utility-sub-type=network.mojom.NetworkService --lang=zh-CN --service-sandbox-type=none --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --startup-read-main-dll --metrics-shmem-handle=2232,i,12329302042861395540,4262860522248294460,524288 --field-trial-handle=1996,i,669767123212459159,2845469719643077501,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=2012,i,17868426098428066936,1168160328482639899,4 --trace-process-track-uuid=3190708989122997041 --mojo-platform-channel-handle=2236 /prefetch:11 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 39788544,
+              "privateWS": 6750208,
+              "privateBytes": 11984896,
+              "cpuSeconds": 0.171875,
+              "role": "utility"
+            },
+            {
+              "pid": 51028,
+              "parent": 15996,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=utility --utility-sub-type=storage.mojom.StorageService --lang=zh-CN --service-sandbox-type=service --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --startup-read-main-dll --metrics-shmem-handle=2644,i,13329430320214293094,10127580535572285870,524288 --field-trial-handle=1996,i,669767123212459159,2845469719643077501,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=2012,i,17868426098428066936,1168160328482639899,4 --trace-process-track-uuid=3190708990060038890 --mojo-platform-channel-handle=2340 /prefetch:13 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 20000768,
+              "privateWS": 2875392,
+              "privateBytes": 7626752,
+              "cpuSeconds": 0.0625,
+              "role": "utility"
+            },
+            {
+              "pid": 12936,
+              "parent": 15996,
+              "name": "msedgewebview2.exe",
+              "command": "\"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe\" --type=renderer --noerrdialogs --user-data-dir=\"E:\\workspace\\native-markdown\\tmp\\webview-measure-profile\\EBWebView\" --webview-exe-name=native-markdown.exe --webview-exe-version=0.1.0 --embedded-browser-webview=1 --embedded-browser-webview-dpi-awareness=2 --autoplay-policy=no-user-gesture-required --video-capture-use-gpu-memory-buffer --lang=zh-CN --device-scale-factor=1 --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=5 --ssd-no-pressure-read-main-dll --launch-time-ticks=118201001929 --metrics-shmem-handle=3824,i,14551788978782761296,5681796986166382519,1048576 --field-trial-handle=1996,i,669767123212459159,2845469719643077501,262144 --disable-features=msPdfOOUI,msSmartScreenProtection,msWebOOUI --variations-seed-version --pseudonymization-salt-handle=2012,i,17868426098428066936,1168160328482639899,4 --trace-process-track-uuid=3190708990997080739 --mojo-platform-channel-handle=3288 /pfhostedapp:04a58f7d7ffadc46d56a900c9fe078ccec6d8965 /prefetch:1",
+              "path": "C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application\\157.0.4341.60\\msedgewebview2.exe",
+              "ws": 100126720,
+              "privateWS": 48533504,
+              "privateBytes": 59338752,
+              "cpuSeconds": 0.34375,
+              "role": "renderer"
+            }
+          ],
+          "events": [
+            "READER_EVENT elapsed_ms=555 process_ms=1014 body={\"kind\":\"ready\"}",
+            "READER_EVENT elapsed_ms=628 process_ms=1087 body={\"kind\":\"document-readable\",\"ms\":72.70000000298023,\"revision\":1}"
+          ],
+          "stderr": ""
+        },
+        {
+          "run": 3,
+          "scenario": "reopen",
+          "windowHandleMs": 830.5002,
+          "peakPrivateBytes": 378605568,
+          "peakPrivateWS": 294785024,
+          "finalSampleMs": 12223.539,
+          "idleCPUPercentOfOneCore": 3.473044690657484,
+          "finalProcesses": [
+            {
+              "pid": 57760,
+              "parent": 35068,
+              "name": "native-markdown.exe",
+              "command": "\"E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe\" E:\\workspace\\native-markdown\\tests\\fixtures\\rendering\\ordinary.md",
+              "path": "E:\\workspace\\native-markdown\\target\\release\\native-markdown.exe",
+              "ws": 110895104,
+              "privateWS": 54980608,
+              "privateBytes": 73703424,
+              "cpuSeconds": 0.765625,
+              "role": "host"
+            }
+          ],
+          "events": [
+            "READER_EVENT elapsed_ms=446 process_ms=732 body={\"kind\":\"ready\"}",
+            "READER_EVENT elapsed_ms=456 process_ms=742 body={\"kind\":\"document-readable\",\"ms\":9.700000002980232,\"revision\":1}",
+            "READER_SWITCH step=0 handler_ms=1",
+            "READER_SWITCH step=1 handler_ms=2",
+            "READER_EVENT elapsed_ms=2506 process_ms=2792 body={\"kind\":\"document-readable\",\"ms\":6.4000000059604645,\"revision\":2}",
+            "READER_EVENT elapsed_ms=2696 process_ms=2982 body={\"kind\":\"diagram-ready\",\"index\":0,\"ms\":191.69999998807907,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=2776 process_ms=3062 body={\"kind\":\"diagram-ready\",\"index\":1,\"ms\":80.30000001192093,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=2845 process_ms=3131 body={\"kind\":\"diagram-ready\",\"index\":2,\"ms\":68.8999999910593,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=2919 process_ms=3205 body={\"kind\":\"diagram-ready\",\"index\":3,\"ms\":73.59999999403954,\"nodes\":311}",
+            "READER_SWITCH step=2 handler_ms=1",
+            "READER_EVENT elapsed_ms=3539 process_ms=3825 body={\"kind\":\"document-readable\",\"ms\":19.400000005960464,\"revision\":3}",
+            "READER_SWITCH step=3 handler_ms=2",
+            "READER_EVENT elapsed_ms=4578 process_ms=4864 body={\"kind\":\"document-readable\",\"ms\":33.3999999910593,\"revision\":4}",
+            "READER_EVENT elapsed_ms=4609 process_ms=4896 body={\"kind\":\"diagram-ready\",\"index\":0,\"ms\":62.79999999701977,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=4676 process_ms=4963 body={\"kind\":\"diagram-ready\",\"index\":1,\"ms\":67.1000000089407,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=4741 process_ms=5028 body={\"kind\":\"diagram-ready\",\"index\":2,\"ms\":64.90000000596046,\"nodes\":311}",
+            "READER_EVENT elapsed_ms=4821 process_ms=5107 body={\"kind\":\"diagram-ready\",\"index\":3,\"ms\":79.20000000298023,\"nodes\":311}",
+            "READER_SWITCH step=4 handler_ms=1",
+            "READER_EVENT elapsed_ms=5577 process_ms=5863 body={\"kind\":\"document-readable\",\"ms\":5.799999997019768,\"revision\":5}",
+            "READER_SWITCH step=5 handler_ms=0"
+          ],
+          "stderr": ""
+        }
+      ]
+    }
+  ]
+}

@@ -1,77 +1,39 @@
-# gpui-component fork 维护说明
+# GPUI Component：已切回官方发布版本
 
-Native Markdown 使用个人 fork 提供三个通用的 `TextView` 扩展，但 Mermaid 解析、worker、SVG 校验、图片查看器和图片缓存仍属于应用。本 fork 应保持为一组可重复移植的薄补丁，而不是 gpui-component 的长期分叉。
+更新：2026-11-19。应用使用 crates.io 的 `gpui-component = "=0.10.0"`，配套 `gpui-pre = "=0.3.12"`、`gpui-pre-platform = "=0.3.12"`。没有 path/git/patch 覆盖，不修改 Cargo 共享缓存。`vendor/gpui-component` 的源码已移除；Git 历史保留回退依据。
 
-## 当前基线
+这里的 gpui-pre 是组件上游所依赖的发布快照，不是本项目维护的 GPUI fork；本项目只固定并使用其发布版本。Wry 0.57.3 和系统 WebView2 继续承担 Markdown 阅读，不引入 Slint。
 
-- Fork：`https://github.com/zaopuppy/gpui-component`
-- 维护分支：`native-markdown-textview`
-- 上游 0.5.1 基线：`0f0ab35233212f8f3277028995caf0c41e13ee6c`
-- 一次性标题跳转：`97cdfe86`
-- 自定义代码块渲染：`f8b48e94`
-- 图片激活回调：`46f6b9c4`
-- 应用通过 `Cargo.toml` 和 `Cargo.lock` 固定完整 commit，不跟踪可移动分支。
+## 剩余定制如何移出依赖
 
-依赖使用 HTTPS 地址，保证普通构建机不需要 GitHub SSH key；维护者仍可用 SSH remote 推送。
+| 原本地补丁 | 当前实现 |
+|---|---|
+| TextView 的标题跳转、代码块替换、图片激活、正文搜索 | 随旧阅读器删除；由 `assets/web/` 和 `src/web_preview.rs` 提供浏览器阅读体验 |
+| Unicode 搜索范围、摘要文字背景 | `src/search_ui.rs` 中的应用组件，仅使用 GPUI 公开绘制 API；`src/markdown.rs` 复用同一匹配规则 |
+| InputState 外部搜索标记 | `src/source_search.rs` 调用官方 `EditorState::create_decorations_collection`，独立于编辑选区 |
+| 搜索目标滚动、居中 | 通过 `display_map`、`range_to_bounds`、`input_bounds`、`line_height`、`set_scroll_offset` 完成；视口外先定位显示行，再用实际布局修正；先展开遮挡目标的折叠 |
+| SearchHandle 绘制几何 | 应用层测试记录，不再加入组件库 |
+| 本地删除上游 Markdown/HTML 模块以裁剪依赖 | 不再维护此类补丁。官方库有内置解析依赖，不表示应用启用另一套 Markdown 阅读器 |
 
-## 模块边界
+源码编辑改用 `EditorState` / `Editor`，查找框仍用 `InputState` / `Input`。只启用源码 Markdown 高亮所需的 `tree-sitter-markdown`，没有开启所有语言集合。文件管理、原子保存、恢复、设置和 Web 内容安全边界继续由现有 Rust 模块负责。
 
-Fork 只提供三个窄接口：
+焦点和编辑选区仍分别管理：源码匹配标记不会移动编辑光标或替换用户选区，滚动修正带请求校验，已过期的延迟操作不会滚动到新文档。摘要使用实际文字布局绘制背景，保持 Unicode、换行和字形塑形。
 
-- `scroll_to_heading_once(heading_index, request_id)`：将 Markdown 标题映射到虚拟列表项，只在 request id 变化时滚动一次。
-- `code_block_renderer(...)` 与 `CodeBlock::source_range()`：允许应用替换某类代码块的正文，并保留原始 Markdown 字节范围。
-- `image_activation_handler(...)` 与 `ImageInfo`：报告鼠标或键盘激活的图片；返回 `false` 时保留链接图片的默认打开行为。
+## 升级中处理的兼容差异
 
-不要把 Merman、Mermaid URI、Native Markdown 状态或产品 UI 放入 fork。这样 TextView 仍是通用模块，应用通过 Adapter 接口接入 Mermaid，三个补丁也能独立移植或删除。
+- 新版 `set_value` 是程序赋值，不再发出 `InputEvent::Change`。加载文档继续显式更新文档状态；模拟用户编辑的测试使用用户编辑路径，不依赖旧的赋值副作用。
+- 窗口由 `gpui_platform::application()` 创建；焦点 API 和滚轮 API 适配新版签名。分栏测试按新版包含边框的布局坐标操作，保留同样的鼠标跟随断言。
+- 定时器和目录扫描改用 GPUI 后台执行器，删除应用直接依赖的 smol。原有 smol 外部线程唤醒会触发新版确定性测试调度器检查，日志曾出现异步线程丢弃本地任务并异常退出；不通过关闭检查或忽略测试绕过。
+- Win32 原生焦点与 GPUI 逻辑焦点不同。点击原生控件、打开搜索时将 HWND 焦点交回父窗口；WebView 设置搜索选区后通过限定的 `search-applied` 回执恢复搜索框焦点。页面仅对原生搜索发出回执，宿主只接受当前请求且搜索仍处于打开和已定位状态的情况，不提供任意 Rust 命令。
 
-## 升级上游版本
+## 验证与性能
 
-1. 在 fork 克隆中更新上游引用：
+最终命令、功能结果、五场景进程树测量与包体变化见 [Markdown 渲染评估](markdown-rendering-evaluation.md) 的“移除 fork 后的官方版本验证”一节。测量覆盖所有关联 WebView2 进程，不能仅比较 Rust 主进程，也不能把 Working Set 求和当作独占内存。
 
-   ```powershell
-   git fetch upstream --tags
-   git switch -c native-markdown-textview-<version> <upstream-release-commit>
-   ```
+手动 GUI 检查与自动化测试均使用实际 Release 程序。GPUI 测试可覆盖逻辑焦点、选区、布局和文本保存，但不能单独证明 HWND 焦点或实际输入法候选窗正常；相关限制需与运行结果一起记录。
 
-2. 按顺序移植补丁：
+## 升级依据
 
-   ```powershell
-   git cherry-pick 97cdfe86 f8b48e94 46f6b9c4
-   ```
+此前逐文件比较了 vendor 与官方 0.5.1：大多数补丁用于已删除的 Markdown 阅读器，真正阻止直接替换的是源码的非侵入搜索标记。官方 0.5.1 的光标 API 会改变选区并聚焦编辑器，而滚动接口为私有，因此选择升级到已提供独立文字装饰和滚动 API 的版本。
 
-   如果上游 API 已经覆盖同一能力，优先迁移应用并删除对应补丁，不保留重复接口。
-
-3. 在 fork 中验证：
-
-   ```powershell
-   cargo test -p gpui-component --lib
-   ```
-
-4. 推送新维护分支，取得最终完整 commit hash。不要在应用里 pin 分支名。
-
-5. 更新应用的 `Cargo.toml` 中 `rev`，然后刷新锁文件并检查依赖来源：
-
-   ```powershell
-   cargo update -p gpui-component
-   cargo tree -d
-   cargo test
-   ```
-
-   `gpui` 必须继续与应用使用同一 crates.io 版本和来源；同版本但不同 Git 来源也会形成不兼容的 Rust 类型。
-
-6. 用实际 Mermaid 文档运行 release 基准：
-
-   ```powershell
-   .\scripts\benchmark-memory.ps1 `
-     'E:\work\docs\chromium\chrome-actor-mechanism.md' `
-     -Scenario all `
-     -Seconds 3
-   ```
-
-## 日常规则
-
-- 每个通用能力一个独立 commit；不要把上游同步、格式化和功能修改混在一起。
-- 推送前保持 fork 工作树干净，并运行 gpui-component 完整库测试。
-- 应用升级 rev 时单独提交 `Cargo.toml` 与 `Cargo.lock`，便于 bisect 和一键回退。
-- 回退应用只需恢复前一个 rev 和锁文件；不要 force-push 已被应用 pin 的 commit。
-- 定期检查上游是否出现等价扩展点。一旦可用，迁移到上游 API 并退休 fork 补丁。
+后续升级固定发布版本并更新锁文件，通过回归与实际 WebView 验证；不要重新引入本地组件 fork 或编辑 registry 源码。

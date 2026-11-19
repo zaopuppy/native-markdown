@@ -7,23 +7,22 @@ build = "build.rs"
 [dependencies]
 anyhow = "1"
 futures = "0.3"
-gpui = "0.2.2"
-gpui-component = { path = "vendor/gpui-component/crates/ui" }
-gpui_http_client = "0.2.2"
-image = { version = "0.25.10", default-features = false }
-merman = { version = "=0.7.0", features = ["render"] }
+gpui = { package = "gpui-pre", version = "=0.3.12" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12" }
+gpui-component = { version = "=0.10.0", features = ["tree-sitter-markdown"] }
 pulldown-cmark = "0.12"
-resvg = "0.45.1"
 rfd = "0.15"
-sha2 = "0.10"
-smol = "2"
 tempfile = "3.12"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+wry = "=0.57.3"
+ammonia = "4"
+serde_json = "1"
+percent-encoding = "2"
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
 
 [dev-dependencies]
-gpui = { version = "0.2.2", features = ["test-support"] }
+gpui = { package = "gpui-pre", version = "=0.3.12", features = ["test-support"] }
 
 [build-dependencies]
 winresource = "0.1.31"

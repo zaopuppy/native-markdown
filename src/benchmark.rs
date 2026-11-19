@@ -20,6 +20,7 @@ pub enum BenchmarkScenario {
     Reopen,
     Scroll,
     ImageRelease,
+    SwitchIdle,
 }
 
 impl BenchmarkScenario {
@@ -33,6 +34,7 @@ impl BenchmarkScenario {
             "reopen" => Ok(Self::Reopen),
             "scroll" => Ok(Self::Scroll),
             "image-release" => Ok(Self::ImageRelease),
+            "switch-idle" => Ok(Self::SwitchIdle),
             _ => Err(format!(
                 "invalid NATIVE_MARKDOWN_BENCHMARK value {value:?}; expected idle, view-modes, zoom, zoom-source, zoom-split, reopen, scroll, or image-release"
             )),
@@ -49,6 +51,7 @@ impl BenchmarkScenario {
             Self::Reopen => "reopen",
             Self::Scroll => "scroll",
             Self::ImageRelease => "image-release",
+            Self::SwitchIdle => "switch-idle",
         }
     }
 }
@@ -125,27 +128,27 @@ impl BenchmarkConfig {
                 1,
                 1_000_000,
             )?,
-            max_private_working_set_bytes: mib(parse_bounded(
+            max_private_working_set_bytes: parse_optional_bounded(
                 &mut lookup,
                 "NATIVE_MARKDOWN_BENCHMARK_MAX_PRIVATE_WS_MIB",
-                160,
                 1,
                 65_536,
-            )?),
-            max_private_bytes: mib(parse_bounded(
+            )?
+            .map_or(u64::MAX, mib),
+            max_private_bytes: parse_optional_bounded(
                 &mut lookup,
                 "NATIVE_MARKDOWN_BENCHMARK_MAX_PRIVATE_BYTES_MIB",
-                160,
                 1,
                 65_536,
-            )?),
-            max_growth_bytes: mib(parse_bounded(
+            )?
+            .map_or(u64::MAX, mib),
+            max_growth_bytes: parse_optional_bounded(
                 &mut lookup,
                 "NATIVE_MARKDOWN_BENCHMARK_MAX_GROWTH_MIB",
-                80,
                 0,
                 65_536,
-            )?),
+            )?
+            .map_or(u64::MAX, mib),
         }))
     }
 
@@ -227,8 +230,8 @@ impl MemorySample {
     #[cfg(target_os = "windows")]
     pub fn capture() -> Result<Self, String> {
         let mut sample = capture_windows_process(None)?;
-        if let Some(worker_pid) = crate::mermaid::worker_pid() {
-            if let Ok(worker) = capture_windows_process(Some(worker_pid)) {
+        for pid in descendant_processes()? {
+            if let Ok(worker) = capture_windows_process(Some(pid)) {
                 sample.working_set = sample.working_set.saturating_add(worker.working_set);
                 sample.private_working_set = sample
                     .private_working_set
@@ -251,6 +254,50 @@ impl MemorySample {
             private_working_set: mib(private_working_set),
             private_bytes: mib(private_bytes),
         }
+    }
+}
+
+#[cfg(windows)]
+fn descendant_processes() -> Result<Vec<u32>, String> {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
+        System::{
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+                TH32CS_SNAPPROCESS,
+            },
+            Threading::GetCurrentProcessId,
+        },
+    };
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut entries = Vec::new();
+        let mut ok = Process32FirstW(snapshot, &mut entry);
+        while ok != 0 {
+            entries.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            ok = Process32NextW(snapshot, &mut entry);
+        }
+        CloseHandle(snapshot);
+        let root = GetCurrentProcessId();
+        let mut known = std::collections::HashSet::from([root]);
+        loop {
+            let size = known.len();
+            for &(pid, parent) in &entries {
+                if known.contains(&parent) {
+                    known.insert(pid);
+                }
+            }
+            if known.len() == size {
+                break;
+            }
+        }
+        known.remove(&root);
+        Ok(known.into_iter().collect())
     }
 }
 
@@ -403,21 +450,7 @@ pub fn start(
 ) {
     window
         .spawn(cx, async move |cx| {
-            smol::Timer::after(config.warmup).await;
-            let mermaid_status = cx
-                .update(|_, cx| {
-                    app.update(cx, |app, _| app.mermaid_benchmark_status())
-                        .unwrap_or_default()
-                })
-                .unwrap_or_default();
-            println!(
-                "NATIVE_MARKDOWN_BENCHMARK event=mermaid blocks={} ready={} pending={} errors={} worker_pid={}",
-                mermaid_status.0,
-                mermaid_status.1,
-                mermaid_status.2,
-                mermaid_status.3,
-                crate::mermaid::worker_pid().unwrap_or_default(),
-            );
+            cx.background_executor().timer(config.warmup).await;
             let baseline = match MemorySample::capture() {
                 Ok(sample) => sample,
                 Err(error) => {
@@ -467,7 +500,7 @@ pub fn start(
                 let remaining = config.duration.saturating_sub(started.elapsed());
                 let pause = config.step_interval.min(remaining);
                 if !pause.is_zero() {
-                    smol::Timer::after(pause).await;
+                    cx.background_executor().timer(pause).await;
                 }
 
                 let sample = match MemorySample::capture() {
@@ -570,7 +603,7 @@ mod tests {
     }
 
     #[test]
-    fn memory_budget_passes_for_a_stable_native_reader() {
+    fn memory_budget_passes_for_a_stable_reader() {
         let config = BenchmarkConfig::for_test(BenchmarkScenario::Idle, 100, 120, 40);
         let mut metrics = BenchmarkMetrics::new(MemorySample::from_mib(90, 60, 75));
         metrics.record(MemorySample::from_mib(115, 72, 88));
@@ -606,6 +639,18 @@ mod tests {
             BenchmarkScenario::parse("zoom-split").unwrap(),
             BenchmarkScenario::ZoomSplit
         );
+    }
+
+    #[test]
+    fn memory_limits_are_opt_in_for_the_webview_process_tree() {
+        let config = BenchmarkConfig::from_lookup(|name| {
+            (name == "NATIVE_MARKDOWN_BENCHMARK").then(|| "idle".to_owned())
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(config.max_private_working_set_bytes, u64::MAX);
+        assert_eq!(config.max_private_bytes, u64::MAX);
+        assert_eq!(config.max_growth_bytes, u64::MAX);
     }
 
     #[test]

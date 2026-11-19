@@ -1,5 +1,7 @@
 # Renderer spike results
 
+> 历史记录：原生 Markdown/Mermaid 阅读实现、对应实验和基准入口已于 2026-11-19 退休。本文数据及命令仅描述当时版本；当前实现以 [阅读架构评估](../docs/markdown-rendering-evaluation.md) 为准。
+
 > PROTOTYPE result captured on 2026-08-31. These numbers are comparative,
 > machine-specific measurements, not product guarantees.
 

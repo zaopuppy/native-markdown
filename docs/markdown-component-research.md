@@ -1,4 +1,8 @@
+> 后续更新：现已使用官方 GPUI Component 0.10.0，移除本地 fork；见 [升级说明](gpui-component-fork.md)。下文 0.5.1 内容为历史调研。
+
 # Rust 原生 Markdown 组件调研（2026-08-31）
+
+> 历史记录：原生 Markdown/Mermaid 阅读实现、对应实验和基准入口已于 2026-11-19 退休。本文数据及命令仅描述当时版本；当前实现以 [阅读架构评估](markdown-rendering-evaluation.md) 为准。
 
 > 实施决定（2026-08-31）：在两个原型完成真人体验后，项目已按使用者决定迁移到
 > `gpui-component 0.5.1`。本文前半部分保留当时的调研判断，便于追溯；最终选择以

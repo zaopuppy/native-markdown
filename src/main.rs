@@ -7,26 +7,37 @@ mod app;
 mod benchmark;
 mod document;
 mod file_tree;
-mod image_cache;
-mod image_loader;
-mod image_viewer;
 mod layout_settings;
 mod markdown;
-mod mermaid;
+mod search_ui;
+mod source_search;
+#[cfg(windows)]
+mod web_document;
+#[cfg(windows)]
+mod web_preview;
 mod zoom;
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use app::NativeMarkdownApp;
-use gpui::{px, size, App, AppContext, Application, Bounds, WindowBounds, WindowOptions};
+use gpui::{px, size, App, AppContext, Bounds, WindowBounds, WindowOptions};
 use gpui_component::{Root, Theme};
-use image_loader::{DocumentImageClient, DocumentImageRoot};
+
+static PROCESS_STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+#[cfg(windows)]
+pub(crate) fn process_elapsed_ms() -> u128 {
+    PROCESS_STARTED
+        .get()
+        .map_or(0, |started| started.elapsed().as_millis())
+}
 
 fn main() {
-    if mermaid::run_worker_if_requested() {
-        return;
-    }
+    PROCESS_STARTED.set(std::time::Instant::now()).ok();
+    // GPUI's DirectComposition surface occludes native child HWNDs. Use its supported HWND
+    // swap-chain path when embedding WebView2, as in the upstream GPUI WebView example.
+    #[cfg(windows)]
+    std::env::set_var("GPUI_DISABLE_DIRECT_COMPOSITION", "true");
 
     let benchmark_config = match benchmark::BenchmarkConfig::from_env() {
         Ok(config) => config,
@@ -42,21 +53,12 @@ fn main() {
         .nth(1)
         .map(PathBuf::from)
         .filter(|path| path.is_file());
-    let image_root = DocumentImageRoot::default();
-    let app = Application::new();
+    let app = gpui_platform::application();
 
     app.run(move |cx| {
         gpui_component::init(cx);
         configure_theme(cx);
         app::bind_keys(cx);
-        image_viewer::bind_keys(cx);
-
-        let fallback_http_client = cx.http_client();
-        cx.set_http_client(Arc::new(DocumentImageClient::new(
-            image_root.clone(),
-            env_flag("NATIVE_MARKDOWN_REMOTE_IMAGES"),
-            fallback_http_client,
-        )));
 
         let bounds = Bounds::centered(None, size(px(1180.0), px(780.0)), cx);
         let window = cx
@@ -66,11 +68,9 @@ fn main() {
                     ..Default::default()
                 },
                 {
-                    let image_root = image_root.clone();
                     move |window, cx| {
-                        let app = cx.new(|cx| {
-                            NativeMarkdownApp::new(initial_path.clone(), image_root, window, cx)
-                        });
+                        let app =
+                            cx.new(|cx| NativeMarkdownApp::new(initial_path.clone(), window, cx));
                         if let Some(config) = benchmark_config.clone() {
                             benchmark::start(
                                 config,
@@ -93,7 +93,7 @@ fn main() {
             .expect("failed to open Native Markdown window");
 
         let _ = window.update(cx, |_, window, _| window.activate_window());
-        cx.on_window_closed(|cx| {
+        cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
             }
@@ -120,8 +120,4 @@ fn configure_theme(cx: &mut App) {
     theme.font_size = px(16.0);
     theme.mono_font_family = "Consolas".into();
     theme.mono_font_size = px(13.0);
-}
-
-fn env_flag(name: &str) -> bool {
-    std::env::var(name).is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "yes"))
 }

@@ -3,19 +3,17 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use crate::source_search::SourceSearch;
 use gpui::{
-    actions, div, image_cache, img, prelude::*, px, relative, rems, rgb, AnyElement, App,
-    AppContext, Context, Entity, ExternalPaths, FocusHandle, Focusable, ImgResourceLoader,
-    IntoElement, KeyBinding, ObjectFit, PromptButton, PromptLevel, Render, Resource,
-    ScrollWheelEvent, SharedString, StyleRefinement, Subscription, WeakEntity, WeakFocusHandle,
-    Window,
+    actions, div, prelude::*, px, rgb, AnyElement, App, AppContext, Context, Entity, ExternalPaths,
+    FocusHandle, Focusable, IntoElement, KeyBinding, PromptButton, PromptLevel, Render,
+    ScrollEvent, SharedString, Subscription, Window,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
-use gpui_component::input::{Escape, Input, InputEvent, InputState, Position};
+use gpui_component::input::{Editor, EditorState, Escape, Input, InputEvent, InputState};
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::resizable::{h_resizable, resizable_panel, ResizableState};
 use gpui_component::scroll::ScrollableElement as _;
-use gpui_component::text::{SearchHandle, TextView, TextViewStyle};
 use gpui_component::tooltip::Tooltip;
 #[cfg(test)]
 use gpui_component::Theme;
@@ -25,19 +23,13 @@ use rfd::AsyncFileDialog;
 use crate::benchmark::BenchmarkScenario;
 use crate::document::Document;
 use crate::file_tree::{self, EntryKind, FileTree, VisibleRow};
-use crate::image_cache::{BudgetImageCache, SOFT_BUDGET_BYTES};
-use crate::image_loader::DocumentImageRoot;
-use crate::image_viewer::ImageViewer;
 use crate::layout_settings::LayoutSettings;
 use crate::markdown::{self, Heading, SearchHit};
-use crate::mermaid::{self, MermaidManager, MermaidPreview, MermaidPreviewStatus, OPEN_TIMEOUT};
 use crate::zoom::ZoomLevel;
 
 const APP_CONTEXT: &str = "NativeMarkdown";
 const FILE_TREE_CONTEXT: &str = "NativeMarkdownFileTree";
-const BASE_FONT_SIZE: f32 = 16.0;
 const BASE_MONO_FONT_SIZE: f32 = 13.0;
-const BASE_HEADING_FONT_SIZE: f32 = 14.0;
 const FILE_TREE_HIDE_BELOW: f32 = 760.0;
 const OUTLINE_HIDE_BELOW: f32 = 1000.0;
 
@@ -64,21 +56,13 @@ fn outline_indent(level: u8) -> f32 {
     8.0 + level.saturating_sub(1) as f32 * 14.0
 }
 
-fn document_text_view_style(factor: f32) -> TextViewStyle {
-    let mut style = TextViewStyle::default()
-        .paragraph_gap(rems(factor))
-        .code_block(StyleRefinement::default().text_size(px(BASE_MONO_FONT_SIZE * factor)));
-    style.heading_base_font_size = px(BASE_HEADING_FONT_SIZE * factor);
-    style
-}
-
 fn highlighted_search_snippet(
     snippet: &str,
     match_range: Range<usize>,
     active: bool,
     query: &str,
 ) -> AnyElement {
-    let highlights = gpui_component::text::search_ranges(snippet, query)
+    let highlights = crate::search_ui::search_ranges(snippet, query)
         .into_iter()
         .map(|range| {
             let selected = active && range == match_range;
@@ -107,7 +91,7 @@ fn highlighted_search_snippet(
             )
         })
         .collect::<Vec<_>>();
-    gpui_component::text::SearchText::new(snippet.to_owned(), highlights).into_any_element()
+    crate::search_ui::SearchText::new(snippet.to_owned(), highlights).into_any_element()
 }
 
 actions!(
@@ -206,8 +190,16 @@ enum DocumentAction {
 }
 
 pub struct NativeMarkdownApp {
+    #[cfg(windows)]
+    web_preview: Option<Rc<std::cell::RefCell<crate::web_preview::WebPreview>>>,
+    #[cfg(windows)]
+    web_error: Option<String>,
+    #[cfg(windows)]
+    web_starting: bool,
+    #[cfg(windows)]
+    native_popup_open: bool,
     document: Document,
-    editor: Entity<InputState>,
+    editor: Entity<EditorState>,
     search_input: Entity<InputState>,
     outline: Vec<Heading>,
     word_count: usize,
@@ -217,8 +209,7 @@ pub struct NativeMarkdownApp {
     active_hit: usize,
     active_search_offset: Option<usize>,
     search_request: u64,
-    preview_search: SearchHandle,
-    source_search: SearchHandle,
+    source_search: SourceSearch,
     app_focus: FocusHandle,
     view_mode: ViewMode,
     file_tree: FileTree,
@@ -243,23 +234,189 @@ pub struct NativeMarkdownApp {
     recovery_available: bool,
     notice: Option<Notice>,
     dialog_in_flight: bool,
-    image_cache: Entity<BudgetImageCache>,
-    image_root: DocumentImageRoot,
-    mermaid: MermaidManager,
-    image_viewer: Option<Entity<ImageViewer>>,
-    image_viewer_resource: Option<SharedString>,
-    image_viewer_previous_focus: Option<WeakFocusHandle>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl NativeMarkdownApp {
-    pub(crate) fn mermaid_benchmark_status(&self) -> (usize, usize, usize, usize) {
-        (
-            self.mermaid.block_count(),
-            self.mermaid.ready_count(),
-            self.mermaid.pending_count(),
-            self.mermaid.error_count(),
-        )
+    #[cfg(windows)]
+    fn suspend_for_popup(
+        &mut self,
+        menu: Entity<gpui_component::menu::PopupMenu>,
+        cx: &mut Context<Self>,
+    ) {
+        self.native_popup_open = true;
+        if let Some(view) = &self.web_preview {
+            view.borrow_mut().set_allowed(false);
+        }
+        cx.subscribe(&menu, |this, _, _: &gpui::DismissEvent, cx| {
+            this.native_popup_open = false;
+            cx.notify();
+        })
+        .detach();
+        cx.notify();
+    }
+    #[cfg(windows)]
+    fn sync_web_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if cfg!(test) || self.web_error.is_some() {
+            return;
+        }
+        if self.document.is_empty() {
+            // Dropping the last controller releases this application's browser process group.
+            self.web_preview.take();
+            return;
+        }
+        let (_, _, overlay_tree, overlay_outline) =
+            self.responsive_panel_visibility(window.viewport_size().width.into());
+        let visible = self.view_mode != ViewMode::Source
+            && !self.dialog_in_flight
+            && !overlay_tree
+            && !overlay_outline
+            && !self.native_popup_open;
+        let (source, offset) = self.preview_source();
+        if self.web_preview.is_none() && !self.web_starting && visible {
+            use futures::StreamExt as _;
+            self.web_starting = true;
+            let (sender, mut receiver) = futures::channel::mpsc::unbounded();
+            let app = cx.entity().downgrade();
+            let initial_source = source.clone();
+            let initial_path = self.document.path.clone();
+            window.spawn(cx,async move |cx| {
+                // WebView2 construction pumps native messages. Both the entity borrow AND the
+                // outer GPUI AppCell borrow must be released before entering its message loop.
+                cx.background_executor().timer(Duration::from_millis(1)).await;
+                let Ok(parent)=cx.update(|window,_|crate::web_preview::PreviewParent::capture(window)) else {return;};
+                // Deliberately outside cx.update: timers and cursor tasks may now borrow GPUI.
+                let result=parent.and_then(|parent|crate::web_preview::WebPreview::new(&parent,initial_source,initial_path.as_deref(),sender));
+                let installed=cx.update(|_window,cx|app.update(cx,|app,cx| {
+                    app.web_starting=false;
+                    if app.document.is_empty() {return false;}
+                    match result {
+                        Ok(view)=>app.web_preview=Some(Rc::new(std::cell::RefCell::new(view))),
+                        Err(error)=>{
+                            app.web_error=Some(error.to_string());
+                            app.set_notice(format!("WebView2 preview unavailable: {error}. Source editing and saving remain available."),true);
+                        }
+                    }
+                    cx.notify();
+                    app.web_preview.is_some()
+                })).ok().and_then(Result::ok).unwrap_or(false);
+                if !installed {return;}
+                while let Some(message)=receiver.next().await {
+                    if cx.update(|window,cx|app.update(cx,|app,cx|match message {
+                        crate::web_preview::PreviewEvent::Message(message)=>app.web_message(&message,window,cx),
+                        crate::web_preview::PreviewEvent::DroppedFile(path)=>app.request_document_action(DocumentAction::OpenPath(path),window,cx),
+                    })).is_err() {break;}
+                }
+            }).detach();
+        }
+        if let Some(view) = &self.web_preview {
+            let mut view = view.borrow_mut();
+            view.set_allowed(visible);
+            let heading = (self.outline_mode == OutlineMode::Jump)
+                .then_some(self.selected_heading)
+                .flatten();
+            let preceding = self
+                .search_hits
+                .iter()
+                .take_while(|hit| hit.source_offset.is_some_and(|position| position < offset))
+                .count();
+            view.update(source, self.document.path.as_deref(), offset, serde_json::json!({
+                "zoom":self.zoom.factor(), "heading":heading, "navigation":self.outline_jump_request,
+                "query":self.search_query, "occurrence":self.active_hit.saturating_sub(preceding), "searchRequest":self.search_request,
+                "nativeSearchFocus":self.search_open && self.search_input.read(cx).focus_handle(cx).is_focused(window),
+            }));
+        }
+    }
+
+    #[cfg(windows)]
+    fn web_message(&mut self, message: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(message) else {
+            return;
+        };
+        match value["kind"].as_str() {
+            Some("zoom-wheel") => {
+                if let Some(delta) = value["delta"].as_f64().filter(|delta| delta.is_finite()) {
+                    if self
+                        .zoom
+                        .apply_gesture((-delta.clamp(-1000., 1000.) as f32 * 0.0025).exp())
+                    {
+                        self.apply_zoom(window, cx);
+                    }
+                }
+            }
+            Some("document-link") => {
+                let path = value["id"]
+                    .as_str()
+                    .and_then(|id| self.web_preview.as_ref()?.borrow().link_target(id));
+                if let Some(path) = path {
+                    self.request_document_action(DocumentAction::OpenPath(path), window, cx);
+                }
+            }
+            Some("shortcut") => {
+                let shift = value["shift"].as_bool().unwrap_or(false);
+                if matches!(
+                    value["key"].as_str(),
+                    Some("o" | "n" | "f" | "e" | "1" | "2" | "3")
+                ) || (shift && value["key"] == "s")
+                {
+                    if let Some(view) = &self.web_preview {
+                        view.borrow().focus_parent();
+                    }
+                }
+                match value["key"].as_str() {
+                    Some("o") => {
+                        self.request_document_action(DocumentAction::OpenDialog, window, cx)
+                    }
+                    Some("n") => self.request_document_action(DocumentAction::New, window, cx),
+                    Some("s") if shift => self.save_as(None, window, cx),
+                    Some("s") => self.save_current(window, cx),
+                    Some("f") => self.show_search(window, cx),
+                    Some("e") => self.on_toggle_preview(&TogglePreview, window, cx),
+                    Some("1") => self.set_view_mode(ViewMode::Preview, cx),
+                    Some("2") => self.set_view_mode(ViewMode::Split, cx),
+                    Some("3") => self.set_view_mode(ViewMode::Source, cx),
+                    Some("+" | "=") => self.zoom_in(window, cx),
+                    Some("-") => self.zoom_out(window, cx),
+                    Some("0") => self.reset_zoom(window, cx),
+                    _ => {}
+                }
+            }
+            Some("link") => {
+                if let Some(url) = value["url"].as_str().filter(|url| {
+                    url.starts_with("https://")
+                        || url.starts_with("http://")
+                        || url.starts_with("mailto:")
+                }) {
+                    cx.open_url(url);
+                }
+            }
+            Some("ready") => {
+                if let Some(view) = &self.web_preview {
+                    view.borrow_mut().on_ready();
+                }
+                // Wry's synchronous initialization pumps native messages. Retry any initial tree
+                // scan whose completion arrived while GPUI was constructing the child HWND.
+                self.refresh_file_tree(window, cx);
+            }
+            Some("search-applied")
+                if self.search_open
+                    && value["request"].as_u64() == Some(self.search_request)
+                    && self.active_search_offset.is_some() =>
+            {
+                // The WebView selection may already have displaced logical as well as HWND
+                // focus. The page only sends this acknowledgement for native-owned searches.
+                self.focus_native_surface();
+                self.search_input
+                    .update(cx, |input, cx| input.focus(window, cx));
+            }
+            Some("escape") if self.search_open => {
+                if let Some(view) = &self.web_preview {
+                    view.borrow().focus_parent();
+                }
+                self.close_search(window, cx);
+            }
+            _ => {} // No arbitrary invoke, path, script, file read or write command exists.
+        }
     }
 
     pub(crate) fn run_benchmark_step(
@@ -273,6 +430,30 @@ impl NativeMarkdownApp {
     ) {
         match scenario {
             BenchmarkScenario::Idle | BenchmarkScenario::Scroll => {}
+            BenchmarkScenario::SwitchIdle => {
+                let started = Instant::now();
+                if step < 5 {
+                    if let Some(path) = secondary_document {
+                        let path = if step.is_multiple_of(2) {
+                            std::env::args_os()
+                                .nth(1)
+                                .map(PathBuf::from)
+                                .unwrap_or_else(|| path.to_path_buf())
+                        } else {
+                            path.to_path_buf()
+                        };
+                        self.open_path(path, window, cx);
+                    }
+                } else if step == 5 {
+                    self.replace_document(Document::default(), window, cx);
+                } else {
+                    return;
+                }
+                println!(
+                    "READER_SWITCH step={step} handler_ms={}",
+                    started.elapsed().as_millis()
+                );
+            }
             BenchmarkScenario::ViewModes => {
                 let mode = match step % 3 {
                     0 => ViewMode::Preview,
@@ -300,26 +481,16 @@ impl NativeMarkdownApp {
                 }
             }
             BenchmarkScenario::ImageRelease if step == switch_step => {
-                let images_loaded = self.image_root.load_count();
-                let estimated_image_mib =
-                    self.image_cache.read(cx).status().estimated_bytes as f64 / (1024.0 * 1024.0);
                 if let Some(path) = secondary_document {
                     self.open_path(path.to_path_buf(), window, cx);
-                    println!(
-                        "NATIVE_MARKDOWN_BENCHMARK event=document_switched images_loaded={images_loaded} estimated_image_mib={estimated_image_mib:.2}"
-                    );
+                    println!("NATIVE_MARKDOWN_BENCHMARK event=document_switched");
                 }
             }
             BenchmarkScenario::ImageRelease => {}
         }
     }
 
-    pub fn new(
-        initial_path: Option<PathBuf>,
-        image_root: DocumentImageRoot,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(initial_path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (document, notice) = match initial_path.as_ref() {
             Some(path) => match Document::open(path.clone()) {
                 Ok(document) => (document, None),
@@ -334,11 +505,10 @@ impl NativeMarkdownApp {
             },
             None => (Document::default(), None),
         };
-        image_root.set_document_path(document.path.as_deref());
 
         let editor = cx.new(|cx| {
-            InputState::new(window, cx)
-                .code_editor("markdown")
+            EditorState::new(window, cx)
+                .language("markdown")
                 .line_number(true)
                 .default_value(document.content.clone())
         });
@@ -354,20 +524,17 @@ impl NativeMarkdownApp {
             .and_then(Path::parent)
             .map(Path::to_path_buf);
         let workspace_resizable = cx.new(|_| ResizableState::default());
-        let image_cache = BudgetImageCache::new(cx);
         let subscriptions = vec![
             cx.subscribe_in(
                 &editor,
                 window,
-                |this: &mut Self, editor, event: &InputEvent, window, cx| {
+                |this: &mut Self, editor, event: &InputEvent, _window, cx| {
                     if matches!(event, InputEvent::Change) {
                         this.document.content = editor.read(cx).value().to_string();
-                        editor.update(cx, |editor, cx| {
-                            editor.set_search_match(None, 0, SearchHandle::default(), cx)
-                        });
-                        this.close_image_viewer(window, cx);
+                        this.source_search.clear();
+
                         this.refresh_analysis();
-                        this.refresh_mermaid(mermaid::EDIT_TIMEOUT, window, cx);
+
                         if let Err(error) = this.document.maybe_write_recovery() {
                             this.set_notice(format!("Recovery copy failed: {error}"), true);
                         }
@@ -383,11 +550,8 @@ impl NativeMarkdownApp {
                         this.search_query = input.read(cx).value().to_string();
                         this.active_hit = 0;
                         this.active_search_offset = None;
-                        this.preview_search.clear();
+
                         this.source_search.clear();
-                        this.editor.update(cx, |editor, cx| {
-                            editor.set_search_match(None, 0, SearchHandle::default(), cx)
-                        });
                         this.refresh_search();
                         cx.notify();
                     }
@@ -403,7 +567,7 @@ impl NativeMarkdownApp {
         ];
 
         cx.spawn(async move |this, cx| loop {
-            smol::Timer::after(Duration::from_secs(1)).await;
+            cx.background_executor().timer(Duration::from_secs(1)).await;
             if this
                 .update(cx, |this, cx| {
                     if this.run_background_maintenance() {
@@ -424,6 +588,14 @@ impl NativeMarkdownApp {
         let preview_markdown = SharedString::from(document.content.clone());
 
         let mut app = Self {
+            #[cfg(windows)]
+            web_preview: None,
+            #[cfg(windows)]
+            web_error: None,
+            #[cfg(windows)]
+            web_starting: false,
+            #[cfg(windows)]
+            native_popup_open: false,
             document,
             editor,
             search_input,
@@ -435,8 +607,7 @@ impl NativeMarkdownApp {
             active_hit: 0,
             active_search_offset: None,
             search_request: 0,
-            preview_search: SearchHandle::default(),
-            source_search: SearchHandle::default(),
+            source_search: SourceSearch::default(),
             app_focus: cx.focus_handle(),
             view_mode: ViewMode::Preview,
             file_tree: FileTree::new(tree_root),
@@ -454,25 +625,19 @@ impl NativeMarkdownApp {
             preview_markdown,
             focused_section: None,
             selected_heading: None,
-            outline_mode: OutlineMode::Focus,
+            outline_mode: OutlineMode::Jump,
             outline_jump_request: 0,
             zoom: ZoomLevel::default(),
             last_path,
             recovery_available: Document::recovery_exists(),
             notice,
             dialog_in_flight: false,
-            image_cache,
-            image_root,
-            mermaid: MermaidManager::new(),
-            image_viewer: None,
-            image_viewer_resource: None,
-            image_viewer_previous_focus: None,
             _subscriptions: subscriptions,
         };
         if let Some(root) = app.file_tree.root().map(Path::to_path_buf) {
             app.load_tree_directory(root, window, cx);
         }
-        app.refresh_mermaid(OPEN_TIMEOUT, window, cx);
+
         app
     }
 
@@ -489,7 +654,7 @@ impl NativeMarkdownApp {
     fn refresh_analysis(&mut self) {
         self.active_search_offset = None;
         self.active_hit = 0;
-        self.preview_search.clear();
+
         self.source_search.clear();
         self.preview_markdown = SharedString::from(self.document.content.clone());
         self.outline = markdown::headings(&self.document.content);
@@ -589,7 +754,9 @@ impl NativeMarkdownApp {
         let request = self.file_tree.begin_load(&path);
         let show_hidden = self.file_tree.show_hidden();
         let scan_path = path.clone();
-        let scan = smol::unblock(move || file_tree::scan_directory(&scan_path, show_hidden));
+        let scan = cx
+            .background_executor()
+            .spawn(async move { file_tree::scan_directory(&scan_path, show_hidden) });
         let app = cx.entity().downgrade();
         window
             .spawn(cx, async move |cx| {
@@ -700,62 +867,6 @@ impl NativeMarkdownApp {
         }
     }
 
-    fn refresh_mermaid(&mut self, timeout: Duration, window: &mut Window, cx: &mut Context<Self>) {
-        let jobs = self.mermaid.refresh(&self.document.content, timeout);
-        self.image_root
-            .retain_mermaid_svgs(&self.mermaid.referenced_assets());
-        for job in jobs {
-            let worker = self.mermaid.worker();
-            let app = cx.entity().downgrade();
-            window
-                .spawn(cx, async move |cx| {
-                    smol::Timer::after(Duration::from_millis(200)).await;
-                    let should_render = cx
-                        .update(|_, cx| {
-                            app.update(cx, |app, _| app.mermaid.needs_result(&job.source_key))
-                                .unwrap_or(false)
-                        })
-                        .unwrap_or(false);
-                    if !should_render {
-                        let _ = cx.update(|_, cx| {
-                            app.update(cx, |app, _| app.mermaid.cancel_pending(&job.source_key))
-                                .ok();
-                        });
-                        return;
-                    }
-
-                    let result = worker
-                        .render(job.source, job.timeout)
-                        .await
-                        .unwrap_or_else(|_| Err("Mermaid worker stopped unexpectedly".to_owned()));
-                    let _ = cx.update(|window, cx| {
-                        app.update(cx, |app, cx| {
-                            app.complete_mermaid_render(&job.source_key, result, window, cx)
-                        })
-                        .ok();
-                    });
-                })
-                .detach();
-        }
-    }
-
-    fn complete_mermaid_render(
-        &mut self,
-        source_key: &str,
-        result: Result<String, String>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(svg) = self.mermaid.apply_result(source_key, result) {
-            if let Err(error) = self.image_root.insert_mermaid_svg(source_key, svg) {
-                self.mermaid.apply_result(source_key, Err(error));
-            }
-        }
-        self.image_root
-            .retain_mermaid_svgs(&self.mermaid.referenced_assets());
-        cx.notify();
-    }
-
     fn run_background_maintenance(&mut self) -> bool {
         let mut visible_change = false;
         if let Err(error) = self.document.maybe_write_recovery() {
@@ -794,13 +905,9 @@ impl NativeMarkdownApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.close_image_viewer(window, cx);
-        self.release_document_images(window, cx);
-        self.mermaid.reset();
         self.document = document;
         self.last_path.clone_from(&self.document.path);
-        self.image_root
-            .set_document_path(self.document.path.as_deref());
+
         self.focused_section = None;
         self.selected_heading = None;
         self.search_open = false;
@@ -809,21 +916,9 @@ impl NativeMarkdownApp {
             editor.set_value(self.document.content.clone(), window, cx)
         });
         self.refresh_analysis();
-        self.refresh_mermaid(OPEN_TIMEOUT, window, cx);
+
         self.recovery_available = Document::recovery_exists();
         cx.notify();
-    }
-
-    fn release_document_images(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.image_cache
-            .update(cx, |cache, cx| cache.clear(window, cx));
-        for uri in self.image_root.take_requested_resources() {
-            let resource = Resource::Uri(uri.into());
-            if let Some(Ok(image)) = window.get_asset::<ImgResourceLoader>(&resource, cx) {
-                cx.drop_image(image, Some(window));
-            }
-            cx.remove_asset::<ImgResourceLoader>(&resource);
-        }
     }
 
     /// The only entry point for actions that can replace the current document.
@@ -996,8 +1091,7 @@ impl NativeMarkdownApp {
         match self.document.save() {
             Ok(()) => {
                 self.last_path.clone_from(&self.document.path);
-                self.image_root
-                    .set_document_path(self.document.path.as_deref());
+
                 self.set_notice("Saved", false);
                 true
             }
@@ -1054,10 +1148,8 @@ impl NativeMarkdownApp {
                         }
                         match app.document.save_as(path.clone()) {
                             Ok(()) => {
-                                app.release_document_images(window, cx);
                                 app.last_path = Some(path);
-                                app.image_root
-                                    .set_document_path(app.document.path.as_deref());
+
                                 let should_reset_tree = app.file_tree.root().is_none_or(|root| {
                                     app.document
                                         .path
@@ -1096,6 +1188,7 @@ impl NativeMarkdownApp {
     }
 
     fn show_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_native_surface();
         self.search_open = true;
         self.search_input.update(cx, |input, cx| {
             input.focus(window, cx);
@@ -1103,9 +1196,17 @@ impl NativeMarkdownApp {
         cx.notify();
     }
 
+    fn focus_native_surface(&self) {
+        // GPUI's logical FocusHandle does not transfer Win32 focus from a child HWND.
+        #[cfg(windows)]
+        if let Some(preview) = &self.web_preview {
+            preview.borrow().focus_parent();
+        }
+    }
+
     fn close_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search_open = false;
-        self.app_focus.focus(window);
+        self.app_focus.focus(window, cx);
         cx.notify();
     }
 
@@ -1135,12 +1236,10 @@ impl NativeMarkdownApp {
         };
         self.active_search_offset = hit.source_offset;
         self.search_request = self.search_request.wrapping_add(1);
-        self.preview_search.clear();
+
         self.source_search.clear();
         let range = hit.source_offset.map(|start| start..hit.source_end);
-        self.editor.update(cx, |editor, cx| {
-            editor.set_search_match(range, self.search_request, self.source_search.clone(), cx)
-        });
+        self.source_search.set_match(range, self.search_request);
         if self.view_mode != ViewMode::Source {
             self.focused_section = None;
             self.selected_heading = markdown::sections(&self.document.content, &self.outline)
@@ -1174,7 +1273,7 @@ impl NativeMarkdownApp {
 
     fn handle_scroll_wheel(
         &mut self,
-        event: &ScrollWheelEvent,
+        event: &ScrollEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1194,15 +1293,13 @@ impl NativeMarkdownApp {
         self.view_mode = mode;
         if self.active_search_offset.is_some() {
             self.search_request = self.search_request.wrapping_add(1);
-            self.preview_search.clear();
+
             self.source_search.clear();
             let range = self
                 .search_hits
                 .get(self.active_hit)
                 .and_then(|hit| hit.source_offset.map(|start| start..hit.source_end));
-            self.editor.update(cx, |editor, cx| {
-                editor.set_search_match(range, self.search_request, self.source_search.clone(), cx)
-            });
+            self.source_search.set_match(range, self.search_request);
         }
         cx.notify();
     }
@@ -1742,7 +1839,7 @@ impl NativeMarkdownApp {
                                 Tooltip::new(path_tooltip.clone()).build(window, cx)
                             })
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                focus.focus(window);
+                                focus.focus(window, cx);
                                 if is_directory {
                                     this.toggle_tree_directory(
                                         click_path.clone(),
@@ -1763,8 +1860,12 @@ impl NativeMarkdownApp {
                             let menu_path = path.clone();
                             let app = cx.entity().downgrade();
                             body.child(row_element.context_menu(move |menu, _, cx| {
-                                app.update(cx, |app, _| {
-                                    app.tree_context_path = Some(menu_path.clone())
+                                #[cfg(windows)]
+                                let popup = cx.entity();
+                                app.update(cx, |app, cx| {
+                                    app.tree_context_path = Some(menu_path.clone());
+                                    #[cfg(windows)]
+                                    app.suspend_for_popup(popup, cx);
                                 })
                                 .ok();
                                 menu.menu("Set as root", Box::new(SetTreeRootContext))
@@ -1773,8 +1874,12 @@ impl NativeMarkdownApp {
                             let menu_path = path.clone();
                             let app = cx.entity().downgrade();
                             body.child(row_element.context_menu(move |menu, _, cx| {
-                                app.update(cx, |app, _| {
-                                    app.tree_context_path = Some(menu_path.clone())
+                                #[cfg(windows)]
+                                let popup = cx.entity();
+                                app.update(cx, |app, cx| {
+                                    app.tree_context_path = Some(menu_path.clone());
+                                    #[cfg(windows)]
+                                    app.suspend_for_popup(popup, cx);
                                 })
                                 .ok();
                                 menu.menu("Open", Box::new(OpenTreeContext))
@@ -1993,191 +2098,37 @@ impl NativeMarkdownApp {
         )
     }
 
-    fn open_image_viewer(
-        &mut self,
-        preview_uri: SharedString,
-        title: SharedString,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let replacing_viewer = self.image_viewer.take().is_some();
-        if replacing_viewer {
-            self.release_image_viewer_resource(window, cx);
-        }
-        if !replacing_viewer {
-            self.image_viewer_previous_focus = window.focused(cx).map(|focus| focus.downgrade());
-        }
-        let high_resolution_uri = SharedString::from(self.image_root.viewer_uri(&preview_uri));
-        self.image_viewer_resource = Some(high_resolution_uri.clone());
-        let high_resolution_resource = Resource::Uri(high_resolution_uri.clone().into());
-        self.image_cache.update(cx, |cache, _| {
-            cache.protect_resource(&high_resolution_resource)
-        });
-        let app = cx.entity().downgrade();
-        let viewer = cx.new(|cx| {
-            ImageViewer::new(
-                preview_uri,
-                high_resolution_uri,
-                title,
-                self.image_cache.clone(),
-                Rc::new(move |window, cx| {
-                    app.update(cx, |app, cx| app.close_image_viewer(window, cx))
-                        .ok();
-                }),
-                cx,
-            )
-        });
-        viewer.read(cx).focus(window);
-        self.image_viewer = Some(viewer);
-        cx.notify();
-    }
-
-    fn release_image_viewer_resource(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(high_resolution_uri) = self.image_viewer_resource.take() else {
-            return;
-        };
-        let resource = Resource::Uri(high_resolution_uri.clone().into());
-        self.image_cache.update(cx, |cache, cx| {
-            cache.release_resource(&resource, window, cx)
-        });
-        self.image_root.release_viewer_uri(&high_resolution_uri);
-    }
-
-    fn close_image_viewer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(viewer) = self.image_viewer.take() else {
-            return;
-        };
-        drop(viewer);
-        self.release_image_viewer_resource(window, cx);
-        if let Some(focus) = self
-            .image_viewer_previous_focus
-            .take()
-            .and_then(|focus| focus.upgrade())
-        {
-            focus.focus(window);
-        } else {
-            self.editor.read(cx).focus_handle(cx).focus(window);
-        }
-        cx.notify();
-    }
-
-    fn preview_panel(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let logical_width: f32 = window.viewport_size().width.into();
-        let panel_fraction = if self.view_mode == ViewMode::Split {
-            0.5
-        } else {
-            1.0
-        };
-        let preview_logical_width = logical_width * panel_fraction;
-        let viewport_width = (preview_logical_width * window.scale_factor())
-            .ceil()
-            .clamp(1.0, 1_280.0) as u32;
-        self.image_root.set_viewport_width(viewport_width);
-        let app = cx.entity().downgrade();
-        let image_app = app.clone();
-        let (preview_source, preview_source_offset) = self.preview_source();
-        let preview_end = preview_source_offset + preview_source.len();
-        let zoom_factor = self.zoom.factor();
-        let mut preview = TextView::markdown("native-markdown-preview", preview_source, window, cx)
-            .style(document_text_view_style(zoom_factor))
-            .text_size(px(BASE_FONT_SIZE * zoom_factor))
-            .selectable(true)
-            .scrollable(true);
-        if self
-            .active_search_offset
-            .is_some_and(|offset| (preview_source_offset..preview_end).contains(&offset))
-        {
-            let preceding = self
-                .search_hits
-                .iter()
-                .take_while(|hit| {
-                    hit.source_offset
-                        .is_some_and(|offset| offset < preview_source_offset)
-                })
-                .count();
-            preview = preview.search_match(
-                self.search_query.clone(),
-                self.active_hit.saturating_sub(preceding),
-                self.search_request,
-                self.preview_search.clone(),
-            );
-        }
-        if self.outline_mode == OutlineMode::Jump {
-            if let Some(heading_index) = self.selected_heading {
-                preview = preview.scroll_to_heading_once(heading_index, self.outline_jump_request);
-            }
-        }
-        let preview = preview.code_block_renderer(move |code_block, window, cx| {
-            if !code_block
-                .lang()
-                .as_deref()
-                .is_some_and(|language| language.trim().eq_ignore_ascii_case("mermaid"))
-            {
-                return None;
-            }
-            let source_range = code_block.source_range()?;
-            let source_range = source_range.start + preview_source_offset
-                ..source_range.end + preview_source_offset;
-            let entity = app.upgrade()?;
-            let app_state = entity.read(cx);
-            let preview = app_state.mermaid.preview_for_block(
-                source_range,
-                preview_logical_width.ceil().clamp(1.0, u32::MAX as f32) as u32,
-                app_state.zoom.percent(),
-            )?;
-            Some(mermaid_preview_element(preview, app.clone(), window, cx))
-        });
-        let preview = preview.image_activation_handler(move |image, _, window, cx| {
-            if image.link_url.is_some() {
-                return false;
-            }
-            let uri = SharedString::from(image.url.to_string());
-            let title = image
-                .title
-                .clone()
-                .or_else(|| image.alt.clone())
-                .unwrap_or_default();
-            image_app
-                .update(cx, |app, cx| app.open_image_viewer(uri, title, window, cx))
-                .is_ok()
-        });
-
-        div()
+    fn preview_panel(&self) -> AnyElement {
+        let panel = div()
             .debug_selector(|| "preview-panel".into())
             .flex_1()
             .h_full()
             .min_w_0()
             .min_h_0()
-            .overflow_hidden()
-            .bg(rgb(0xfaf7f0))
-            .child(
-                image_cache(self.image_cache.clone())
-                    .size_full()
-                    .child(div().size_full().px_5().child(preview)),
-            )
-    }
-
-    fn show_mermaid_source(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(range) = self.mermaid.block_body_range(index) else {
-            return;
+            .overflow_hidden();
+        #[cfg(windows)]
+        {
+            if let Some(view) = &self.web_preview {
+                return panel
+                    .child(crate::web_preview::WebPreview::surface(view.clone()))
+                    .into_any_element();
+            }
+            if let Some(error) = &self.web_error {
+                return panel.p_5().child(format!("WebView2 preview unavailable: {error}. Install Microsoft Edge WebView2 Runtime and restart. You can still edit and save the source.")).into_any_element();
+            }
+        }
+        let message = if cfg!(windows) {
+            "Loading preview…"
+        } else {
+            "Web preview is currently supported on Windows. Source editing remains available."
         };
-        let position = byte_offset_position(&self.document.content, range.start);
-        self.view_mode = ViewMode::Split;
-        self.focused_section = None;
-        self.selected_heading = None;
-        self.editor.update(cx, |editor, cx| {
-            editor.set_cursor_position(position, window, cx)
-        });
-        self.set_notice(
-            format!("Mermaid source at line {}", position.line + 1),
-            false,
-        );
-        cx.notify();
+        panel.p_5().child(message).into_any_element()
     }
 
     fn editor_panel(&self) -> impl IntoElement {
         div()
             .debug_selector(|| "editor-panel".into())
+            .relative()
             .flex_1()
             .h_full()
             .min_w_0()
@@ -2185,11 +2136,12 @@ impl NativeMarkdownApp {
             .overflow_hidden()
             .bg(rgb(0xeee9df))
             .child(
-                Input::new(&self.editor)
-                    .h_full()
+                Editor::new(&self.editor)
+                    .size_full()
                     .text_size(px(BASE_MONO_FONT_SIZE * self.zoom.factor()))
                     .appearance(false),
             )
+            .child(self.source_search.observer(self.editor.clone()))
     }
 
     fn welcome(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2262,14 +2214,14 @@ impl NativeMarkdownApp {
             self.welcome(cx).into_any_element()
         } else {
             match self.view_mode {
-                ViewMode::Preview => self.preview_panel(window, cx).into_any_element(),
+                ViewMode::Preview => self.preview_panel().into_any_element(),
                 ViewMode::Source => self.editor_panel().into_any_element(),
                 ViewMode::Split => div()
                     .h_flex()
                     .size_full()
                     .child(self.editor_panel())
                     .child(div().w(px(1.0)).h_full().bg(rgb(0xd3c8b5)))
-                    .child(self.preview_panel(window, cx))
+                    .child(self.preview_panel())
                     .into_any_element(),
             }
         };
@@ -2375,26 +2327,14 @@ impl NativeMarkdownApp {
             .into_any_element()
     }
 
-    fn status_bar(&self, cx: &Context<Self>) -> impl IntoElement {
-        let image_cache = self.image_cache.read(cx).status();
-        let image_cache_mib = image_cache.estimated_bytes as f64 / 1024.0 / 1024.0;
-        let image_status = if image_cache.over_soft_budget {
-            format!(
-                " · image cache {image_cache_mib:.1} MiB ({} MiB soft budget; current image retained)",
-                SOFT_BUDGET_BYTES / 1024 / 1024
-            )
-        } else if image_cache.estimated_bytes > 0 {
-            format!(" · image cache {image_cache_mib:.1} MiB")
-        } else {
-            String::new()
-        };
-        let mermaid_status = match self.mermaid.error_count() {
-            0 => String::new(),
-            count => format!(
-                " · {count} Mermaid error{}",
-                if count == 1 { "" } else { "s" }
-            ),
-        };
+    fn status_bar(&self) -> impl IntoElement {
+        #[cfg(windows)]
+        let local_images = self
+            .web_preview
+            .as_ref()
+            .map_or(0, |preview| preview.borrow().image_count());
+        #[cfg(not(windows))]
+        let local_images = 0;
         let left = self.notice.as_ref().map_or_else(
             || {
                 if self.document.is_dirty() {
@@ -2425,19 +2365,16 @@ impl NativeMarkdownApp {
             .text_color(rgb(0x70685b))
             .child(div().text_color(left_color).child(left))
             .child(format!(
-                "{} words · {} min read · {} · {}% · {} local images{image_status}{mermaid_status}",
+                "{} words · {} min read · {} · {}% · {} local images",
                 self.word_count,
                 self.reading_minutes,
                 self.view_mode.label(),
                 self.zoom.percent(),
-                self.image_root.load_count(),
+                local_images,
             ))
     }
 
     fn handle_drop(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
-        if self.image_viewer.is_some() {
-            return;
-        }
         if let Some(path) = paths.paths().iter().find(|path| path.is_file()).cloned() {
             self.request_document_action(DocumentAction::OpenPath(path), window, cx);
         }
@@ -2446,6 +2383,8 @@ impl NativeMarkdownApp {
 
 impl Render for NativeMarkdownApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(windows)]
+        self.sync_web_preview(window, cx);
         let marker = if self.document.is_dirty() { " •" } else { "" };
         window.set_window_title(&format!(
             "{}{marker} — Native Markdown",
@@ -2453,47 +2392,46 @@ impl Render for NativeMarkdownApp {
         ));
 
         if window.focused(cx).is_none() {
-            self.app_focus.focus(window);
+            self.app_focus.focus(window, cx);
         }
 
         div()
             .track_focus(&self.app_focus)
+            .capture_any_mouse_down(cx.listener(|this, _, _, _| this.focus_native_surface()))
             .capture_action(cx.listener(|this, _: &NextSearchHit, window, cx| {
-                if this.search_open && this.image_viewer.is_none() {
+                if this.search_open {
                     this.next_hit(window, cx);
                     cx.stop_propagation();
                 }
             }))
             .capture_action(cx.listener(|this, _: &PreviousSearchHit, window, cx| {
-                if this.search_open && this.image_viewer.is_none() {
+                if this.search_open {
                     this.previous_hit(window, cx);
                     cx.stop_propagation();
                 }
             }))
             .capture_action(
                 cx.listener(|this, _: &gpui_component::input::Enter, window, cx| {
-                    if this.search_open && this.image_viewer.is_none() {
+                    if this.search_open {
                         this.next_hit(window, cx);
                         cx.stop_propagation();
                     }
                 }),
             )
             .capture_action(cx.listener(|this, _: &FileTreeOpen, window, cx| {
-                if this.search_open && this.image_viewer.is_none() {
+                if this.search_open {
                     this.next_hit(window, cx);
                     cx.stop_propagation();
                 }
             }))
             .capture_action(
                 cx.listener(|this, _: &gpui_component::input::Search, window, cx| {
-                    if this.image_viewer.is_none() {
-                        this.show_search(window, cx);
-                        cx.stop_propagation();
-                    }
+                    this.show_search(window, cx);
+                    cx.stop_propagation();
                 }),
             )
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if this.image_viewer.is_some() || this.dialog_in_flight {
+                if this.dialog_in_flight {
                     return;
                 }
                 let key = &event.keystroke;
@@ -2516,7 +2454,7 @@ impl Render for NativeMarkdownApp {
                     cx.stop_propagation();
                 } else if this.search_open && key.key == "escape" {
                     this.close_search(window, cx);
-                    this.app_focus.focus(window);
+                    this.app_focus.focus(window, cx);
                     window.prevent_default();
                     cx.stop_propagation();
                 }
@@ -2526,7 +2464,7 @@ impl Render for NativeMarkdownApp {
             } else {
                 APP_CONTEXT
             })
-            .on_scroll_wheel(cx.listener(Self::handle_scroll_wheel))
+            .on_scroll(cx.listener(Self::handle_scroll_wheel))
             .on_action(cx.listener(Self::on_new))
             .on_action(cx.listener(Self::on_open))
             .on_action(cx.listener(Self::on_save))
@@ -2572,116 +2510,14 @@ impl Render for NativeMarkdownApp {
             .child(self.toolbar(window, cx))
             .when(self.search_open, |view| view.child(self.search_bar(cx)))
             .child(self.workspace(window, cx))
-            .child(self.status_bar(cx))
-            .when_some(self.image_viewer.clone(), |root, viewer| root.child(viewer))
+            .child(self.status_bar())
     }
-}
-
-fn mermaid_preview_element(
-    preview: MermaidPreview,
-    app: WeakEntity<NativeMarkdownApp>,
-    window: &mut Window,
-    cx: &mut App,
-) -> AnyElement {
-    let display_width = preview.display_width;
-    let preview_index = preview.index;
-    let (image_uri, message, is_error) = match preview.status {
-        MermaidPreviewStatus::Ready { image_uri } => (Some(image_uri), None, false),
-        MermaidPreviewStatus::Loading { image_uri, message } => (image_uri, Some(message), false),
-        MermaidPreviewStatus::Error { image_uri, message } => (image_uri, Some(message), true),
-    };
-    let mut element = div().v_flex().w_full().gap_2();
-    if let Some(image_uri) = image_uri {
-        let focus_handle = window
-            .use_keyed_state(("mermaid-preview-image", preview_index), cx, |_, cx| {
-                cx.focus_handle()
-            })
-            .read(cx)
-            .clone()
-            .tab_stop(true);
-        let viewer_uri = SharedString::from(image_uri.clone());
-        let image_app = app.clone();
-        element = element.child(
-            img(SharedString::from(image_uri))
-                .id(("mermaid-preview-image-element", preview_index))
-                .track_focus(&focus_handle)
-                .cursor_pointer()
-                .tooltip(|window, cx| Tooltip::new("Click to view image").build(window, cx))
-                .object_fit(ObjectFit::Contain)
-                .max_w(relative(1.0))
-                .when_some(display_width, |image, width| image.w(px(width as f32)))
-                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(move |_, window, cx| {
-                    image_app
-                        .update(cx, |app, cx| {
-                            app.open_image_viewer(
-                                viewer_uri.clone(),
-                                "Mermaid diagram".into(),
-                                window,
-                                cx,
-                            )
-                        })
-                        .ok();
-                    cx.stop_propagation();
-                }),
-        );
-    }
-    if let Some(message) = message {
-        let index = preview.index;
-        let source_app = app.clone();
-        element = element.child(
-            div()
-                .debug_selector(|| "mermaid-preview-message".into())
-                .v_flex()
-                .w_full()
-                .gap_2()
-                .p_3()
-                .rounded_md()
-                .bg(if is_error {
-                    rgb(0xf7e5df)
-                } else {
-                    rgb(0xeee9df)
-                })
-                .text_color(if is_error {
-                    rgb(0x9b392a)
-                } else {
-                    rgb(0x665b4d)
-                })
-                .child(div().whitespace_normal().child(message))
-                .child(
-                    Button::new(("mermaid-view-source", index))
-                        .label("View source")
-                        .small()
-                        .on_click(move |_, window, cx| {
-                            source_app
-                                .update(cx, |app, cx| app.show_mermaid_source(index, window, cx))
-                                .ok();
-                        }),
-                ),
-        );
-    }
-    if preview.experimental {
-        element = element.child(div().text_sm().text_color(rgb(0x70685b)).child(format!(
-            "Experimental Mermaid {} rendering",
-            preview.diagram_label
-        )));
-    }
-    element.into_any_element()
-}
-
-fn byte_offset_position(source: &str, offset: usize) -> Position {
-    let offset = offset.min(source.len());
-    let before = &source[..offset];
-    let line = before.bytes().filter(|byte| *byte == b'\n').count() as u32;
-    let line_start = before.rfind('\n').map_or(0, |index| index + 1);
-    let character = before[line_start..].chars().count() as u32;
-    Position::new(line, character)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{point, size, Modifiers, ScrollDelta, TestAppContext, TouchPhase};
+    use gpui::{point, size, Focusable, Modifiers, TestAppContext};
 
     fn draw_app(cx: &mut gpui::VisualTestContext) {
         cx.update(|window, cx| {
@@ -2698,8 +2534,7 @@ mod tests {
         cx.update(gpui_component::init);
         let mut app = None;
         let (_, cx) = cx.add_window_view(|window, cx| {
-            let view =
-                cx.new(|cx| NativeMarkdownApp::new(None, DocumentImageRoot::default(), window, cx));
+            let view = cx.new(|cx| NativeMarkdownApp::new(None, window, cx));
             app = Some(view.clone());
             gpui_component::Root::new(view, window, cx)
         });
@@ -2727,8 +2562,8 @@ mod tests {
             draw_app(cx);
         }
         let outline = cx.debug_bounds("outline-panel").unwrap();
-        // Debug bounds exclude the outline's 12px padding and 1px left border.
-        let start = point(outline.left() - px(13.0), outline.center().y);
+        // Current GPUI debug bounds include padding and the border: the handle is at this edge.
+        let start = point(outline.left(), outline.center().y);
         cx.simulate_mouse_down(start, gpui::MouseButton::Left, Modifiers::default());
         for (step, delta) in [-10.0, -30.0, -50.0, 20.0].into_iter().enumerate() {
             let target = point(start.x + px(delta), start.y);
@@ -2752,8 +2587,7 @@ mod tests {
         cx.update(bind_keys);
         let mut app = None;
         let (_, cx) = cx.add_window_view(|window, cx| {
-            let view =
-                cx.new(|cx| NativeMarkdownApp::new(None, DocumentImageRoot::default(), window, cx));
+            let view = cx.new(|cx| NativeMarkdownApp::new(None, window, cx));
             app = Some(view.clone());
             gpui_component::Root::new(view, window, cx)
         });
@@ -2762,10 +2596,10 @@ mod tests {
             app.update(cx, |app, cx| {
                 app.document.content = "# Search\n\nFirst Needle.\n\nSecond Needle.".into();
                 app.refresh_analysis();
-                app.file_tree_focus.focus(window);
+                app.file_tree_focus.focus(window, cx);
                 app.show_search(window, cx);
                 app.search_input
-                    .update(cx, |input, cx| input.set_value("needle", window, cx));
+                    .update(cx, |input, cx| input.replace_all("needle", window, cx));
             })
         });
         cx.simulate_resize(size(px(1180.0), px(780.0)));
@@ -2778,7 +2612,7 @@ mod tests {
         app.read_with(cx, |app, _| {
             assert_eq!(app.active_hit, 1, "Shift+Enter must wrap to last result")
         });
-        cx.update(|window, cx| app.read(cx).file_tree_focus.focus(window));
+        cx.update(|window, cx| app.read(cx).file_tree_focus.clone().focus(window, cx));
         draw_app(cx);
         cx.simulate_keystrokes("enter");
         app.read_with(cx, |app, _| {
@@ -2790,7 +2624,7 @@ mod tests {
         cx.simulate_keystrokes("shift-enter");
         app.read_with(cx, |app, _| assert_eq!(app.active_hit, 1));
         cx.simulate_keystrokes("escape");
-        cx.update(|window, cx| app.read(cx).file_tree_focus.focus(window));
+        cx.update(|window, cx| app.read(cx).file_tree_focus.clone().focus(window, cx));
         draw_app(cx);
         cx.simulate_keystrokes("ctrl-f");
         app.read_with(cx, |app, _| {
@@ -2803,8 +2637,7 @@ mod tests {
         cx.update(gpui_component::init);
         let mut app = None;
         let (_, cx) = cx.add_window_view(|window, cx| {
-            let view =
-                cx.new(|cx| NativeMarkdownApp::new(None, DocumentImageRoot::default(), window, cx));
+            let view = cx.new(|cx| NativeMarkdownApp::new(None, window, cx));
             app = Some(view.clone());
             gpui_component::Root::new(view, window, cx)
         });
@@ -2817,7 +2650,7 @@ mod tests {
                 app.refresh_analysis();
                 app.show_search(window, cx);
                 app.search_input
-                    .update(cx, |input, cx| input.set_value("needle", window, cx));
+                    .update(cx, |input, cx| input.replace_all("needle", window, cx));
             })
         });
         cx.simulate_resize(size(px(1180.0), px(780.0)));
@@ -2829,172 +2662,6 @@ mod tests {
             first_result.size.width >= bar.size.width - px(34.0),
             "result preview must fill the search bar's padded content width: bar={bar:?}, result={first_result:?}"
         );
-    }
-
-    #[gpui::test]
-    fn markdown_table_wraps_long_unbroken_cell_content(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
-        let mut app = None;
-        let (_, cx) = cx.add_window_view(|window, cx| {
-            let view =
-                cx.new(|cx| NativeMarkdownApp::new(None, DocumentImageRoot::default(), window, cx));
-            app = Some(view.clone());
-            gpui_component::Root::new(view, window, cx)
-        });
-        let app = app.unwrap();
-        cx.update(|_, cx| {
-            app.update(cx, |app, cx| {
-                app.document.content = format!(
-                    "| Name | Value |\n| --- | --- |\n| key | {} |",
-                    "long-unbroken-value".repeat(20)
-                );
-                app.refresh_analysis();
-                app.file_tree_open = false;
-                app.outline_open = false;
-                cx.notify();
-            })
-        });
-        cx.simulate_resize(size(px(520.0), px(420.0)));
-        draw_app(cx);
-
-        let header = cx.debug_bounds("markdown-table-row-0").unwrap();
-        let data = cx.debug_bounds("markdown-table-row-1").unwrap();
-        let key_cell = cx.debug_bounds("markdown-table-cell-1-0").unwrap();
-        let value_cell = cx.debug_bounds("markdown-table-cell-1-1").unwrap();
-        assert!(
-            value_cell.size.width > key_cell.size.width * 4,
-            "the long column must receive more width: key_cell={key_cell:?}, value_cell={value_cell:?}"
-        );
-        assert!(
-            data.size.height > header.size.height + px(8.0),
-            "long cell content must wrap and grow the row: header={header:?}, data={data:?}, key_cell={key_cell:?}, value_cell={value_cell:?}"
-        );
-    }
-
-    #[gpui::test]
-    fn search_paints_and_centers_occurrences_inside_a_long_paragraph(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
-        cx.update(bind_keys);
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("search.md");
-        let source = format!(
-            "# One heading\n\n{} **Needle** {} `NEEDLE` {}\n\nTail.",
-            "before ".repeat(400),
-            "middle ".repeat(500),
-            "after ".repeat(400)
-        );
-        std::fs::write(&path, &source).unwrap();
-        let mut app = None;
-        let (_, cx) = cx.add_window_view(|window, cx| {
-            let view = cx.new(|cx| {
-                NativeMarkdownApp::new(Some(path), DocumentImageRoot::default(), window, cx)
-            });
-            app = Some(view.clone());
-            gpui_component::Root::new(view, window, cx)
-        });
-        let app = app.unwrap();
-        cx.simulate_resize(size(px(1180.0), px(780.0)));
-        draw_app(cx);
-        cx.simulate_keystrokes("ctrl-f");
-        cx.update(|window, cx| {
-            app.update(cx, |app, cx| {
-                app.search_input
-                    .update(cx, |input, cx| input.set_value("needle", window, cx));
-            })
-        });
-        draw_app(cx);
-        app.read_with(cx, |app, _| {
-            assert!(
-                !app.preview_search.geometry().painted,
-                "typing must not jump"
-            )
-        });
-        for (key, text) in [
-            ("enter", "Needle"),
-            ("enter", "NEEDLE"),
-            ("shift-enter", "Needle"),
-        ] {
-            cx.simulate_keystrokes(key);
-            draw_app(cx);
-            draw_app(cx);
-            app.read_with(cx, |app, _| {
-                let geometry = app.preview_search.geometry();
-                assert!(
-                    geometry.painted,
-                    "expected actual visible marker: {geometry:?}"
-                );
-                assert_eq!(geometry.text.as_ref(), text);
-                let bounds = geometry.bounds.unwrap();
-                let viewport = geometry.viewport.unwrap();
-                assert!(
-                    (bounds.center().y - viewport.center().y).abs() < px(4.),
-                    "target line must be centered: {geometry:?}"
-                );
-                assert_eq!(
-                    app.preview_source().0.as_ref(),
-                    source,
-                    "search must not rewrite Markdown"
-                );
-            });
-        }
-        cx.simulate_keystrokes("escape");
-        draw_app(cx);
-        app.read_with(cx, |app, _| {
-            assert!(
-                app.preview_search.geometry().painted,
-                "marker persists after closing search"
-            )
-        });
-        cx.simulate_keystrokes("ctrl-f");
-        cx.update(|window, cx| {
-            app.update(cx, |app, cx| {
-                app.search_input
-                    .update(cx, |input, cx| input.set_value("absent", window, cx))
-            })
-        });
-        draw_app(cx);
-        app.read_with(cx, |app, _| {
-            assert!(app.search_hits.is_empty());
-            assert!(!app.preview_search.geometry().painted);
-        });
-    }
-
-    #[gpui::test]
-    fn search_overrides_inline_code_background(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
-        cx.update(bind_keys);
-        let mut app = None;
-        let (_, cx) = cx.add_window_view(|window, cx| {
-            let view =
-                cx.new(|cx| NativeMarkdownApp::new(None, DocumentImageRoot::default(), window, cx));
-            app = Some(view.clone());
-            gpui_component::Root::new(view, window, cx)
-        });
-        let app = app.unwrap();
-        cx.update(|window, cx| {
-            app.update(cx, |app, cx| {
-                app.document.content = "`actor.mojom` 不负责理解用户究竟想做什么，而是位于计划生成之后、网页动作实际执行之前：".into();
-                app.refresh_analysis();
-                app.show_search(window, cx);
-                app.search_input
-                    .update(cx, |input, cx| input.set_value("actor", window, cx));
-            })
-        });
-        cx.simulate_resize(size(px(1180.0), px(780.0)));
-        draw_app(cx);
-        cx.simulate_keystrokes("enter");
-        draw_app(cx);
-        draw_app(cx);
-
-        app.read_with(cx, |app, _| {
-            let geometry = app.preview_search.geometry();
-            assert_eq!(geometry.text.as_ref(), "actor");
-            assert_eq!(
-                geometry.background_color,
-                Some(rgb(0x3730a3).into()),
-                "active search must replace the inline-code background: {geometry:?}"
-            );
-        });
     }
 
     #[gpui::test]
@@ -3011,20 +2678,24 @@ mod tests {
         std::fs::write(&path, &source).unwrap();
         let mut app = None;
         let (_, cx) = cx.add_window_view(|window, cx| {
-            let view = cx.new(|cx| {
-                NativeMarkdownApp::new(Some(path), DocumentImageRoot::default(), window, cx)
-            });
+            let view = cx.new(|cx| NativeMarkdownApp::new(Some(path), window, cx));
             app = Some(view.clone());
             gpui_component::Root::new(view, window, cx)
         });
         let app = app.unwrap();
+        cx.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.editor
+                    .update(cx, |editor, cx| editor.set_selected_range(0..8, cx));
+            });
+        });
         cx.simulate_resize(size(px(1180.0), px(780.0)));
         draw_app(cx);
         cx.simulate_keystrokes("ctrl-f");
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
                 app.search_input
-                    .update(cx, |input, cx| input.set_value("needle", window, cx))
+                    .update(cx, |input, cx| input.replace_all("needle", window, cx))
             })
         });
         draw_app(cx);
@@ -3034,7 +2705,12 @@ mod tests {
         for _ in 0..4 {
             draw_app(cx);
         }
-        app.read_with(cx, |app, _| {
+        app.read_with(cx, |app, cx| {
+            assert_eq!(
+                app.editor.read(cx).selected_range(),
+                0..8,
+                "search must preserve the editing selection"
+            );
             let geometry = app.source_search.geometry();
             assert!(
                 geometry.painted,
@@ -3059,7 +2735,13 @@ mod tests {
             );
         });
         cx.simulate_keystrokes("escape");
-        cx.update(|window, cx| app.read(cx).editor.read(cx).focus_handle(cx).focus(window));
+        cx.update(|window, cx| {
+            app.read(cx)
+                .editor
+                .read(cx)
+                .focus_handle(cx)
+                .focus(window, cx)
+        });
         draw_app(cx);
         cx.simulate_keystrokes("ctrl-f");
         app.read_with(cx, |app, _| {
@@ -3071,160 +2753,12 @@ mod tests {
     }
 
     #[gpui::test]
-    fn search_visits_code_tables_lists_and_chinese_in_render_order(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
-        cx.update(bind_keys);
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("mixed-search.md");
-        let source = "# Matches\n\n- A **目标** in a list\n\n| Column |\n| --- |\n| 目标 |\n\n```rust\n// 目标\n```\n\n```mermaid\nflowchart LR\n目标-->B\n```\n\nLast 目标.";
-        std::fs::write(&path, source).unwrap();
-        let mut app = None;
-        let (_, cx) = cx.add_window_view(|window, cx| {
-            let view = cx.new(|cx| {
-                NativeMarkdownApp::new(Some(path), DocumentImageRoot::default(), window, cx)
-            });
-            app = Some(view.clone());
-            gpui_component::Root::new(view, window, cx)
-        });
-        let app = app.unwrap();
-        cx.simulate_resize(size(px(1180.0), px(780.0)));
-        draw_app(cx);
-        cx.simulate_keystrokes("ctrl-f");
-        cx.update(|window, cx| {
-            app.update(cx, |app, cx| {
-                app.search_input
-                    .update(cx, |input, cx| input.set_value("目标", window, cx))
-            })
-        });
-        draw_app(cx);
-        app.read_with(cx, |app, _| assert_eq!(app.search_hits.len(), 5));
-        for expected in 0..5 {
-            cx.simulate_keystrokes("enter");
-            draw_app(cx);
-            draw_app(cx);
-            app.read_with(cx, |app, _| {
-                let geometry = app.preview_search.geometry();
-                assert_eq!(app.active_hit, expected);
-                assert!(
-                    geometry.painted,
-                    "missing marker for result {expected}: {geometry:?}"
-                );
-                assert_eq!(geometry.text.as_ref(), "目标");
-                assert_eq!(app.preview_source().0.as_ref(), source);
-            });
-        }
-    }
-
-    #[gpui::test]
-    fn plain_markdown_image_opens_modal_viewer_and_keeps_document_zoom(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
-        cx.update(crate::image_viewer::bind_keys);
-        let directory = tempfile::tempdir().unwrap();
-        let image_path = directory.path().join("figure.png");
-        image::DynamicImage::ImageRgba8(image::ImageBuffer::from_pixel(
-            320,
-            180,
-            image::Rgba([80, 120, 160, 255]),
-        ))
-        .save(&image_path)
-        .unwrap();
-        let document_path = directory.path().join("images.md");
-        std::fs::write(&document_path, "# Image\n\n![Details](figure.png)\n").unwrap();
-        let image_root = DocumentImageRoot::default();
-        let fallback = cx.update(|cx| cx.http_client());
-        cx.update(|cx| {
-            cx.set_http_client(std::sync::Arc::new(
-                crate::image_loader::DocumentImageClient::new(image_root.clone(), false, fallback),
-            ))
-        });
-        let (app, cx) = cx.add_window_view(|window, cx| {
-            NativeMarkdownApp::new(Some(document_path), image_root, window, cx)
-        });
-        draw_app(cx);
-        let image = cx.debug_bounds("text-view-image").unwrap();
-
-        cx.simulate_click(image.center(), Modifiers::default());
-        draw_app(cx);
-
-        assert!(cx.debug_bounds("image-viewer").is_some());
-        let surface = cx.debug_bounds("image-viewer-surface").unwrap();
-        let preview = cx.debug_bounds("image-viewer-preview-image").unwrap();
-        let high_resolution = cx
-            .debug_bounds("image-viewer-high-resolution-image")
-            .unwrap();
-        assert!(
-            surface.contains(&preview.center()),
-            "preview image must overlap its surface"
-        );
-        assert!(
-            surface.contains(&high_resolution.center()),
-            "high-resolution image must overlap its surface"
-        );
-        let open_cache_bytes = app.read_with(cx, |app, cx| {
-            app.image_cache.read(cx).status().estimated_bytes
-        });
-        assert!(open_cache_bytes > 0);
-        let document_zoom = app.read_with(cx, |app, _| app.zoom.percent());
-        cx.simulate_event(ScrollWheelEvent {
-            position: image.center(),
-            delta: ScrollDelta::Lines(point(0.0, 3.0)),
-            modifiers: Modifiers::default(),
-            touch_phase: TouchPhase::Moved,
-        });
-        assert_eq!(
-            app.read_with(cx, |app, _| app.zoom.percent()),
-            document_zoom
-        );
-
-        cx.simulate_keystrokes("escape");
-        draw_app(cx);
-        app.read_with(cx, |app, cx| {
-            assert!(app.image_viewer.is_none());
-            assert!(
-                app.image_cache.read(cx).status().estimated_bytes < open_cache_bytes,
-                "closing the viewer must release its high-resolution cache entry"
-            );
-        });
-    }
-
-    #[gpui::test]
-    fn linked_markdown_image_preserves_link_activation(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
-        let directory = tempfile::tempdir().unwrap();
-        let image_path = directory.path().join("figure.png");
-        image::DynamicImage::ImageRgba8(image::ImageBuffer::from_pixel(
-            40,
-            40,
-            image::Rgba([80, 120, 160, 255]),
-        ))
-        .save(&image_path)
-        .unwrap();
-        let document_path = directory.path().join("linked-image.md");
-        std::fs::write(
-            &document_path,
-            "[![Website](figure.png)](https://example.com/)\n",
-        )
-        .unwrap();
-        let image_root = DocumentImageRoot::default();
-        let (app, cx) = cx.add_window_view(|window, cx| {
-            NativeMarkdownApp::new(Some(document_path), image_root, window, cx)
-        });
-        draw_app(cx);
-        let image = cx.debug_bounds("text-view-image").unwrap();
-
-        cx.simulate_click(image.center(), Modifiers::default());
-
-        assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/"));
-        app.read_with(cx, |app, _| assert!(app.image_viewer.is_none()));
-    }
-
-    #[gpui::test]
     fn escape_closes_search_and_preserves_the_query(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
-        let image_root = DocumentImageRoot::default();
+
         let mut app = None;
         let (_, cx) = cx.add_window_view(|window, cx| {
-            let view = cx.new(|cx| NativeMarkdownApp::new(None, image_root, window, cx));
+            let view = cx.new(|cx| NativeMarkdownApp::new(None, window, cx));
             app = Some(view.clone());
             gpui_component::Root::new(view, window, cx)
         });
@@ -3233,7 +2767,7 @@ mod tests {
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
                 app.search_input.update(cx, |input, cx| {
-                    input.set_value("needle", window, cx);
+                    input.replace_all("needle", window, cx);
                 });
                 app.show_search(window, cx);
             });
@@ -3252,9 +2786,8 @@ mod tests {
     #[gpui::test]
     fn unsaved_document_action_does_not_block_gpui_tasks(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
-        let image_root = DocumentImageRoot::default();
-        let (app, cx) =
-            cx.add_window_view(|window, cx| NativeMarkdownApp::new(None, image_root, window, cx));
+
+        let (app, cx) = cx.add_window_view(|window, cx| NativeMarkdownApp::new(None, window, cx));
 
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
@@ -3280,9 +2813,8 @@ mod tests {
     #[gpui::test]
     fn discarding_changes_continues_the_requested_action(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
-        let image_root = DocumentImageRoot::default();
-        let (app, cx) =
-            cx.add_window_view(|window, cx| NativeMarkdownApp::new(None, image_root, window, cx));
+
+        let (app, cx) = cx.add_window_view(|window, cx| NativeMarkdownApp::new(None, window, cx));
 
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
@@ -3306,10 +2838,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("layout.md");
         std::fs::write(&path, "# Layout\n\nFirst line.\n\nSecond line.").unwrap();
-        let image_root = DocumentImageRoot::default();
 
         let (app, cx) = cx.add_window_view(|window, cx| {
-            let mut app = NativeMarkdownApp::new(Some(path), image_root, window, cx);
+            let mut app = NativeMarkdownApp::new(Some(path), window, cx);
             app.view_mode = ViewMode::Split;
             app
         });
@@ -3347,11 +2878,9 @@ mod tests {
         std::fs::create_dir(&nested).unwrap();
         std::fs::write(&first, "# First").unwrap();
         std::fs::write(&second, "# Second").unwrap();
-        let image_root = DocumentImageRoot::default();
 
-        let (app, cx) = cx.add_window_view(|window, cx| {
-            NativeMarkdownApp::new(Some(first.clone()), image_root, window, cx)
-        });
+        let (app, cx) = cx
+            .add_window_view(|window, cx| NativeMarkdownApp::new(Some(first.clone()), window, cx));
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
                 app.view_mode = ViewMode::Source;
@@ -3388,11 +2917,9 @@ mod tests {
         std::fs::create_dir(&other).unwrap();
         std::fs::write(&first, "# First").unwrap();
         std::fs::write(&second, "# Second").unwrap();
-        let image_root = DocumentImageRoot::default();
 
-        let (app, cx) = cx.add_window_view(|window, cx| {
-            NativeMarkdownApp::new(Some(first), image_root, window, cx)
-        });
+        let (app, cx) =
+            cx.add_window_view(|window, cx| NativeMarkdownApp::new(Some(first), window, cx));
         cx.update(|window, cx| {
             app.update(cx, |app, cx| {
                 app.view_mode = ViewMode::Split;
@@ -3410,10 +2937,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("layout.md");
         std::fs::write(&path, "# Layout\n\n## Section").unwrap();
-        let image_root = DocumentImageRoot::default();
-        let (app, cx) = cx.add_window_view(|window, cx| {
-            NativeMarkdownApp::new(Some(path), image_root, window, cx)
-        });
+
+        let (app, cx) =
+            cx.add_window_view(|window, cx| NativeMarkdownApp::new(Some(path), window, cx));
 
         cx.simulate_resize(size(px(1180.0), px(780.0)));
         app.update(cx, |_, cx| cx.notify());
@@ -3456,9 +2982,9 @@ mod tests {
             "# Parent\nparent\n## Child\nchild\n### Grandchild\ngrandchild\n# Next\nnext",
         )
         .unwrap();
-        let image_root = DocumentImageRoot::default();
+
         let (app, cx) = cx.add_window_view(|window, cx| {
-            let mut app = NativeMarkdownApp::new(Some(path), image_root, window, cx);
+            let mut app = NativeMarkdownApp::new(Some(path), window, cx);
             app.focused_section = Some(0);
             app
         });
@@ -3473,31 +2999,6 @@ mod tests {
         });
     }
 
-    #[gpui::test]
-    fn focused_section_renders_mermaid_without_rewriting_markdown(cx: &mut TestAppContext) {
-        cx.update(gpui_component::init);
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("focused-mermaid.md");
-        std::fs::write(
-            &path,
-            "# First\n\nText.\n\n# Diagram\n\n```mermaid\nflowchart LR\nA-->B\n```\n",
-        )
-        .unwrap();
-        let image_root = DocumentImageRoot::default();
-        let (app, cx) = cx.add_window_view(|window, cx| {
-            let mut app = NativeMarkdownApp::new(Some(path), image_root, window, cx);
-            app.focused_section = Some(1);
-            app
-        });
-
-        app.update(cx, |_, cx| cx.notify());
-        cx.update(|window, cx| {
-            let _ = window.draw(cx);
-        });
-
-        assert!(cx.debug_bounds("mermaid-preview-message").is_some());
-    }
-
     #[test]
     fn view_mode_labels_are_stable() {
         assert_eq!(ViewMode::Preview.label(), "Preview");
@@ -3508,9 +3009,8 @@ mod tests {
     #[gpui::test]
     fn background_maintenance_only_redraws_for_visible_changes(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
-        let image_root = DocumentImageRoot::default();
-        let (app, cx) =
-            cx.add_window_view(|window, cx| NativeMarkdownApp::new(None, image_root, window, cx));
+
+        let (app, cx) = cx.add_window_view(|window, cx| NativeMarkdownApp::new(None, window, cx));
 
         app.update(cx, |app, _| {
             assert!(!app.run_background_maintenance());
@@ -3527,9 +3027,8 @@ mod tests {
     #[gpui::test]
     fn reading_metadata_is_cached_with_document_analysis(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
-        let image_root = DocumentImageRoot::default();
-        let (app, cx) =
-            cx.add_window_view(|window, cx| NativeMarkdownApp::new(None, image_root, window, cx));
+
+        let (app, cx) = cx.add_window_view(|window, cx| NativeMarkdownApp::new(None, window, cx));
 
         app.update(cx, |app, _| {
             app.document.content = "# Title\n\none two three".to_owned();
@@ -3547,9 +3046,8 @@ mod tests {
     #[gpui::test]
     fn document_zoom_does_not_change_the_application_theme(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
-        let image_root = DocumentImageRoot::default();
-        let (app, cx) =
-            cx.add_window_view(|window, cx| NativeMarkdownApp::new(None, image_root, window, cx));
+
+        let (app, cx) = cx.add_window_view(|window, cx| NativeMarkdownApp::new(None, window, cx));
 
         cx.update(|window, cx| {
             let initial_font_size = Theme::global(cx).font_size;
@@ -3562,20 +3060,95 @@ mod tests {
         });
     }
 
-    #[test]
-    fn document_zoom_scales_headings_and_spacing_together() {
-        let style = document_text_view_style(2.0);
+    #[gpui::test]
+    #[cfg(windows)]
+    fn web_search_ack_restores_only_the_current_open_search(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (app, cx) = cx.add_window_view(|window, cx| NativeMarkdownApp::new(None, window, cx));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.document.content = "# Search\n\nNeedle".into();
+                app.search_query = "needle".into();
+                app.refresh_analysis();
+                app.show_search(window, cx);
+                app.next_hit(window, cx);
+                let request = app.search_request;
+                app.app_focus.focus(window, cx);
+                app.web_message(
+                    &serde_json::json!({"kind":"search-applied","request":request.wrapping_sub(1)})
+                        .to_string(),
+                    window,
+                    cx,
+                );
+                assert!(app.app_focus.is_focused(window));
+                app.web_message(
+                    &serde_json::json!({"kind":"search-applied","request":request}).to_string(),
+                    window,
+                    cx,
+                );
+                assert!(app
+                    .search_input
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window));
+                app.close_search(window, cx);
+                app.web_message(
+                    &serde_json::json!({"kind":"search-applied","request":request}).to_string(),
+                    window,
+                    cx,
+                );
+                assert!(app.app_focus.is_focused(window));
+            });
+        });
+    }
 
-        assert_eq!(style.heading_base_font_size, px(28.0));
-        assert_eq!(style.paragraph_gap, rems(2.0));
+    #[gpui::test]
+    fn upstream_editor_updates_document_undoes_and_saves_exact_text(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        cx.update(bind_keys);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("edit.md");
+        let original = "# 编辑\r\n\r\nOriginal 中文.\r\n";
+        std::fs::write(&path, original).unwrap();
+        let (app, cx) = cx.add_window_view(|window, cx| {
+            let mut app = NativeMarkdownApp::new(Some(path.clone()), window, cx);
+            app.view_mode = ViewMode::Source;
+            app
+        });
+        cx.simulate_resize(size(px(1180.0), px(780.0)));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.editor.update(cx, |editor, cx| {
+                    editor.set_selected_range(original.len()..original.len(), cx);
+                    editor.focus(window, cx);
+                });
+            });
+        });
+        draw_app(cx);
+        cx.simulate_input("追加内容 🦀");
+        draw_app(cx);
+        let expected = format!("{original}追加内容 🦀");
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.document.content, expected);
+            assert!(app.document.is_dirty());
+        });
+        cx.simulate_keystrokes("ctrl-z");
+        draw_app(cx);
+        app.read_with(cx, |app, _| assert_eq!(app.document.content, original));
+        cx.simulate_keystrokes("ctrl-y");
+        draw_app(cx);
+        app.read_with(cx, |app, _| assert_eq!(app.document.content, expected));
+        cx.simulate_keystrokes("ctrl-s");
+        draw_app(cx);
+        assert_eq!(std::fs::read(&path).unwrap(), expected.as_bytes());
+        app.read_with(cx, |app, _| assert!(!app.document.is_dirty()));
     }
 
     #[gpui::test]
     fn document_zoom_keeps_toolbar_at_fixed_height(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
-        let image_root = DocumentImageRoot::default();
-        let (app, cx) =
-            cx.add_window_view(|window, cx| NativeMarkdownApp::new(None, image_root, window, cx));
+
+        let (app, cx) = cx.add_window_view(|window, cx| NativeMarkdownApp::new(None, window, cx));
         cx.simulate_resize(size(px(1180.0), px(780.0)));
         cx.update(|window, cx| {
             let _ = window.draw(cx);

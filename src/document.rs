@@ -37,6 +37,7 @@ impl Document {
     }
 
     pub fn open(path: PathBuf) -> io::Result<Self> {
+        let path = std::path::absolute(path)?;
         let content = fs::read_to_string(&path)?;
         Ok(Self {
             saved_content: content.clone(),
@@ -135,6 +136,15 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opening_relative_file_keeps_an_absolute_document_root() {
+        let file = NamedTempFile::new_in(".").unwrap();
+        fs::write(file.path(), "# Relative document").unwrap();
+        let document = Document::open(PathBuf::from(file.path().file_name().unwrap())).unwrap();
+        assert!(document.path.as_ref().unwrap().is_absolute());
+        assert_eq!(document.content, "# Relative document");
+    }
 
     #[test]
     fn dirty_state_tracks_saved_content() {

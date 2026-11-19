@@ -1,20 +1,19 @@
 # Native Markdown
 
-A quiet, reader-first Markdown desktop app built with Rust and GPUI Component. Documents open in a native, virtualized preview without a browser or WebView.
+A quiet, reader-first Markdown desktop app built with Rust and GPUI Component. Windows uses one system WebView2 control for the reading area; the window, file tree, source editor and file lifecycle remain native Rust. No Electron, bundled Chromium, Node runtime or frontend build is required.
 
 ## Features
 
 - **Reader-first preview**: Preview is the default, with optional split and source-only modes
 - **Preview and source modes**: Switch between preview, split, and source-only layouts
-- **Native Markdown rendering**: Headings, tables, task lists, strikethrough, links, local images, highlighted code blocks, and simple inline HTML
-- **Offline Mermaid diagrams**: Fenced `mermaid` blocks render through an isolated native worker, with no browser, WebView, Node, or network service
+- **Browser-quality reading**: Selectable text, tables (including safe HTML spans), code highlighting, KaTeX math, local images, links and document zoom
+- **Offline Mermaid diagrams**: Mermaid.js creates inline SVG with zoom, Fit, optional drag-to-pan and selectable labels. Diagrams render when near the viewport; individual failures show their source
 - **Folder tree**: Lazy, read-only Markdown browsing rooted at the document folder, with parent and folder-root navigation
-- **Document outline**: Collapsible heading navigation in a resizable right sidebar
+- **Document outline**: Resizable right sidebar, default Jump navigation and optional section Focus
 - **Find**: Search rendered text and jump between matching sections
 - **Safe file lifecycle**: Atomic saves, Save As, dirty-state warnings, visible errors, and background recovery
 - **Desktop integration**: Native dialogs, drag-and-drop, and command-line paths
 - **Local-image safety**: Relative images are restricted to the active document directory; remote images are disabled by default
-- **Bounded image cache**: 48 MiB soft budget, temporary overage while scrolling, idle LRU cleanup, and a 160 MiB hard limit; no disk cache
 - **Reading metadata**: Word count and estimated reading time
 
 ## Shortcuts
@@ -29,15 +28,19 @@ A quiet, reader-first Markdown desktop app built with Rust and GPUI Component. D
 | Preview / Split / Source | `Ctrl+1` / `Ctrl+2` / `Ctrl+3` |
 | Zoom in / out / reset | `Ctrl++` / `Ctrl+-` / `Ctrl+0` |
 
-Use `Ctrl+mouse-wheel` for smooth zooming. Set `NATIVE_MARKDOWN_REMOTE_IMAGES=1` before launch only when a document is allowed to load remote images.
+Use `Ctrl+mouse-wheel` for document zooming, or inside a diagram for independent SVG zooming. Toggle **Pan** before dragging a diagram; leave Pan off to select and copy its text. Click a local image to open its zoomable viewer.
+
+Windows and Microsoft Edge WebView2 Runtime are required for the reading surface. Initialization failure shows an explicit error; source editing and saving remain available. There is no native preview fallback or renderer selection environment variable, and the app does not install a runtime silently. Other platforms do not yet have a supported reading backend.
+
+Relative local images are restricted to the active document folder. Remote images are disabled. See [the rendering evaluation](docs/markdown-rendering-evaluation.md) for historical process-tree memory measurements and the final architecture.
 
 When the file tree is focused, use `Up` / `Down` to move, `Left` / `Right` to collapse or expand folders, and `Enter` to open a Markdown file.
 
-## Mermaid compatibility
+## Mermaid and reading interaction
 
-Mermaid rendering uses the pinned native `merman 0.7.0` renderer and targets Mermaid 11.15 syntax. Flowchart, sequence, class, state, ER, Gantt, pie, mindmap, timeline, journey, GitGraph, C4, block, packet, radar, treemap, XYChart, architecture, requirement, quadrant, Sankey, and Kanban diagrams are supported. TreeView, Ishikawa, Event Modeling, and Venn rendering is experimental.
+Offline Mermaid.js renders inline SVG with selectable labels, independent zoom, Fit and optional drag-to-pan. Normal text selection works with Pan disabled. A broken diagram shows its error without blocking the document. The reading surface, code blocks and diagrams use narrow rounded scrollbars without arrow buttons.
 
-For untrusted documents, Mermaid runtime configuration, HTML labels other than plain `<br>` line breaks, click handlers, links, and external resources are disabled. Only a frontmatter `title` is accepted. A block is limited to 256 KiB, a document to 64 diagrams, and generated images are rendered within bounded SVG and pixel budgets. Browser-pixel-identical layout is not guaranteed.
+Untrusted Markdown HTML is sanitized. Scripts, runtime diagram configuration, external diagram resources and arbitrary Rust IPC are blocked. Each document allows up to 64 diagrams, each with at most 256 KiB of source and 1,500 edges. Mermaid frontmatter is currently rejected, including title-only frontmatter.
 
 ## Building
 
@@ -59,21 +62,32 @@ cargo run -- path/to/document.md
 
 ## Memory regression benchmark
 
-The Windows benchmark launches a fresh real application process for each scenario, records working set, private working set, and private bytes, then fails when a configured budget is exceeded:
+The measurement script records the application and its WebView2 descendants, including process-level Working Set, Private Working Set, Private Bytes and CPU. Shared working sets must not be treated as exclusive memory:
 
 ```powershell
-.\scripts\benchmark-memory.ps1 `
-  'path\to\document.md' `
-  -Scenario all `
-  -Seconds 5
+python scripts/make-rendering-fixtures.py
+.\scripts\measure-rendering.ps1 -Binary target\release\native-markdown.exe -Runs 3 -Seconds 12 -Output tmp\webview.json
+python scripts/summarize-rendering.py tmp\webview.json
 ```
 
-Use `-Scenario zoom -Steps 5 -StepMs 300` for the minimal staged-zoom probe. The `scroll` scenario sends real wheel messages to the benchmark window. Defaults are 160 MiB peak private working set, 160 MiB peak private bytes, and 80 MiB private-byte growth; override them with `-MaxPrivateWorkingSetMiB`, `-MaxPrivateBytesMiB`, and `-MaxGrowthMiB`.
+The earlier native budget harness and renderer prototypes have been retired. Historical comparison results remain in `docs/measurements`; they are not measurements of every later build.
+
+## Verification
+
+```powershell
+cargo test --all-targets
+cargo clippy --all-targets -- -D warnings
+uv run --with playwright python scripts/test-web-preview.py --binary target/release/native-markdown.exe
+python scripts/test-delayed-web-preview.py --binary target/release/native-markdown.exe --runs 3
+```
+
+The first suite checks native editor, file lifecycle, analysis and sanitized HTML projection. The latter scripts exercise the actual WebView2 process and delayed-open lifecycle; no native reading implementation substitutes for those tests.
 
 ## Tech Stack
 
 - **GPUI**: GPU-accelerated native window and rendering runtime
-- **GPUI Component fork**: Two pinned generic `TextView` seams; see [fork maintenance](docs/gpui-component-fork.md)
-- **GPUI Component `TextView`**: Virtualized Markdown, simple HTML, and image rendering
-- **pulldown-cmark**: Outline, search, and reading metadata analysis
+- **GPUI Component 0.10.0**: Official crates.io release, with gpui-pre/platform 0.3.12; application-owned search integration and no local fork. See [upgrade notes](docs/gpui-component-fork.md)
+- **Wry + system WebView2**: One Windows reading surface, with no bundled browser engine
+- **pulldown-cmark + ammonia**: HTML projection, safety, outline, search and metadata
+- **Offline JavaScript assets**: Mermaid, KaTeX, highlight.js and DOMPurify, with pinned versions and licenses
 - **rfd**: Native file dialogs

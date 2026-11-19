@@ -1,5 +1,7 @@
 # Rust build artifacts
 /target/
+/tmp/
+/tests/fixtures/rendering/
 /spikes/**/target/
 
 # Local code index

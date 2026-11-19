@@ -1,0 +1,14 @@
+[package]
+name = "webview-reader-poc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wry = "=0.57.3"
+winit = "0.30"
+pulldown-cmark = "0.12"
+ammonia = "4"
+percent-encoding = "2"
+
+[dev-dependencies]
+tempfile = "3"
