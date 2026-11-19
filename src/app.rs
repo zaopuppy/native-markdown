@@ -2027,7 +2027,14 @@ impl NativeMarkdownApp {
                     .child(
                         state_button(
                             Button::new("show-full-document")
-                                .label("Full document")
+                                .accessibility_label("Full document")
+                                .child(
+                                    div().h_flex().w_full().child(
+                                        div()
+                                            .debug_selector(|| "outline-full-document-label".into())
+                                            .child("Full document"),
+                                    ),
+                                )
                                 .small()
                                 .w_full()
                                 .justify_start(),
@@ -2050,7 +2057,18 @@ impl NativeMarkdownApp {
             let label = format!("{marker} {}", heading.title);
             panel = panel.child(
                 Button::new(("outline-heading", heading_index))
-                    .label(label)
+                    .accessibility_label(label.clone())
+                    .child(
+                        div().h_flex().w_full().min_w_0().child(
+                            div()
+                                .debug_selector(move || {
+                                    format!("outline-heading-label-{heading_index}").into()
+                                })
+                                .min_w_0()
+                                .text_ellipsis()
+                                .child(label),
+                        ),
+                    )
                     .small()
                     .ghost()
                     .w_full()
@@ -2953,6 +2971,15 @@ mod tests {
         let full_document = cx.debug_bounds("outline-full-document").unwrap();
         assert!(tree.origin.x + tree.size.width <= preview.origin.x);
         assert!(outline.origin.x >= preview.origin.x + preview.size.width);
+        let full_label = cx.debug_bounds("outline-full-document-label").unwrap();
+        let heading_label = cx.debug_bounds("outline-heading-label-0").unwrap();
+        let nested_label = cx.debug_bounds("outline-heading-label-1").unwrap();
+        assert!(full_label.left() < outline.left() + px(40.0));
+        assert!(heading_label.left() < outline.left() + px(40.0));
+        assert!(
+            (nested_label.left() - heading_label.left() - px(14.0)).abs() < px(1.0),
+            "outline indentation should depend on heading level, not label width"
+        );
         let outline_control_gap =
             full_document.origin.y - (outline_toolbar.origin.y + outline_toolbar.size.height);
         assert!(
