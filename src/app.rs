@@ -10,7 +10,9 @@ use gpui::{
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Editor, EditorState, Escape, Input, InputEvent, InputState};
-use gpui_component::menu::{ContextMenuExt as _, DropdownMenu as _};
+use gpui_component::menu::ContextMenuExt as _;
+#[cfg(not(windows))]
+use gpui_component::menu::DropdownMenu as _;
 use gpui_component::resizable::{h_resizable, resizable_panel, ResizableState};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::tooltip::Tooltip;
@@ -1369,12 +1371,94 @@ impl NativeMarkdownApp {
         cx.notify();
     }
 
+    #[cfg(windows)]
+    fn open_toolbar_menu(&mut self, file_menu: bool, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::native_menu::{Command, Item, Popup};
+        if cfg!(test) {
+            return; // Native tracking needs an interactive desktop; exercised by the UI check.
+        }
+        let items = if file_menu {
+            vec![
+                Item::command("New document\tCtrl+N", Command::New),
+                Item::command("Open…\tCtrl+O", Command::Open),
+                Item::separator(),
+                Item::command("Save\tCtrl+S", Command::Save),
+                Item::command("Save as…\tCtrl+Shift+S", Command::SaveAs),
+            ]
+        } else {
+            vec![
+                Item::command("Preview\tCtrl+1", Command::Preview)
+                    .checked(self.view_mode == ViewMode::Preview),
+                Item::command("Split\tCtrl+2", Command::Split)
+                    .checked(self.view_mode == ViewMode::Split),
+                Item::command("Source\tCtrl+3", Command::Source)
+                    .checked(self.view_mode == ViewMode::Source),
+                Item::separator(),
+                Item::command("Zoom in\tCtrl++", Command::ZoomIn),
+                Item::command("Zoom out\tCtrl+-", Command::ZoomOut),
+                Item::command("Actual size\tCtrl+0", Command::ResetZoom),
+            ]
+        };
+        let position = gpui::point(
+            if file_menu {
+                px(12.0)
+            } else {
+                window.viewport_size().width - px(12.0)
+            },
+            px(42.0),
+        );
+        let popup = match Popup::capture(window, position, !file_menu, items) {
+            Ok(popup) => popup,
+            Err(error) => {
+                self.set_notice(format!("Could not open menu: {error}"), true);
+                cx.notify();
+                return;
+            }
+        };
+        let app = cx.entity().downgrade();
+        window
+            .spawn(cx, async move |cx| {
+                // Release both GPUI borrows before entering the modal native message loop.
+                cx.background_executor()
+                    .timer(Duration::from_millis(1))
+                    .await;
+                let result = popup.show();
+                cx.update(|window, cx| {
+                    app.update(cx, |this, cx| match result {
+                        Ok(Some(Command::New)) => {
+                            this.request_document_action(DocumentAction::New, window, cx)
+                        }
+                        Ok(Some(Command::Open)) => {
+                            this.request_document_action(DocumentAction::OpenDialog, window, cx)
+                        }
+                        Ok(Some(Command::Save)) => this.save_current(window, cx),
+                        Ok(Some(Command::SaveAs)) => this.save_as(None, window, cx),
+                        Ok(Some(Command::Preview)) => this.set_view_mode(ViewMode::Preview, cx),
+                        Ok(Some(Command::Split)) => this.set_view_mode(ViewMode::Split, cx),
+                        Ok(Some(Command::Source)) => this.set_view_mode(ViewMode::Source, cx),
+                        Ok(Some(Command::ZoomIn)) => this.zoom_in(window, cx),
+                        Ok(Some(Command::ZoomOut)) => this.zoom_out(window, cx),
+                        Ok(Some(Command::ResetZoom)) => this.reset_zoom(window, cx),
+                        Ok(None) => {}
+                        Err(error) => {
+                            this.set_notice(format!("Could not open menu: {error}"), true);
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                })
+                .ok();
+            })
+            .detach();
+    }
+
     fn toolbar(&mut self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let width: f32 = window.viewport_size().width.into();
         let (regular_tree, regular_outline, overlay_tree, overlay_outline) =
             self.responsive_panel_visibility(width);
-        let app = cx.entity().downgrade();
+        #[cfg(not(windows))]
         let focus = self.app_focus.clone();
+        #[cfg(not(windows))]
         let file_menu = Button::new("file-menu")
             .label("File")
             .icon(tool_icon(r#"<path d="m9 10 3 3 3-3"/>"#))
@@ -1382,13 +1466,7 @@ impl NativeMarkdownApp {
             .ghost()
             .border_0()
             .accessibility_label("File menu")
-            .dropdown_menu(move |menu, _, cx| {
-                #[cfg(windows)]
-                {
-                    let popup = cx.entity();
-                    app.update(cx, |app, cx| app.suspend_for_popup(popup, cx))
-                        .ok();
-                }
+            .dropdown_menu(move |menu, _, _| {
                 menu.action_context(focus.clone())
                     .min_w(px(220.0))
                     .menu("New document", Box::new(NewDocument))
@@ -1397,16 +1475,12 @@ impl NativeMarkdownApp {
                     .menu("Save", Box::new(SaveDocument))
                     .menu("Save as…", Box::new(SaveDocumentAs))
             });
-        let app = cx.entity().downgrade();
+        #[cfg(not(windows))]
         let focus = self.app_focus.clone();
+        #[cfg(not(windows))]
         let more_menu = tool_button("view-menu", "More options",
                 r#"<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>"#)
-            .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |menu, _, cx| {
-                #[cfg(windows)]
-                {
-                    let popup = cx.entity();
-                    app.update(cx, |app, cx| app.suspend_for_popup(popup, cx)).ok();
-                }
+            .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |menu, _, _| {
                 menu.action_context(focus.clone())
                     .min_w(px(220.0))
                     .label("Reading mode")
@@ -1419,6 +1493,19 @@ impl NativeMarkdownApp {
                     .menu("Zoom out", Box::new(ZoomOut))
                     .menu("Actual size", Box::new(ResetZoom))
             });
+        #[cfg(windows)]
+        let file_menu = Button::new("file-menu")
+            .label("File")
+            .icon(tool_icon(r#"<path d="m9 10 3 3 3-3"/>"#))
+            .small()
+            .ghost()
+            .border_0()
+            .accessibility_label("File menu")
+            .on_click(cx.listener(|this, _, window, cx| this.open_toolbar_menu(true, window, cx)));
+        #[cfg(windows)]
+        let more_menu = tool_button("view-menu", "More options",
+            r#"<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>"#)
+            .on_click(cx.listener(|this, _, window, cx| this.open_toolbar_menu(false, window, cx)));
         let modes = div().h_flex().gap(px(2.0)).p(px(2.0)).rounded_md()
             .bg(rgb(0xeeefec))
             .child(state_button(
@@ -2524,6 +2611,38 @@ mod tests {
         cx.run_until_parked();
         cx.update(|window, cx| {
             let _ = window.draw(cx);
+        });
+    }
+
+    #[gpui::test]
+    #[cfg(windows)]
+    fn file_menu_keeps_document_visible(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let mut app = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| NativeMarkdownApp::new(None, window, cx));
+            app = Some(view.clone());
+            gpui_component::Root::new(view, window, cx)
+        });
+        let app = app.unwrap();
+        cx.simulate_resize(size(px(1180.0), px(780.0)));
+        draw_app(cx);
+        cx.simulate_mouse_down(
+            point(px(40.0), px(21.0)),
+            gpui::MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            point(px(40.0), px(21.0)),
+            gpui::MouseButton::Left,
+            Modifiers::default(),
+        );
+        draw_app(cx);
+        app.read_with(cx, |app, _| {
+            assert!(
+                !app.native_popup_open,
+                "opening File must not suspend the document WebView"
+            );
         });
     }
 

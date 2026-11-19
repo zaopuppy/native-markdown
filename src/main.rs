@@ -9,6 +9,8 @@ mod document;
 mod file_tree;
 mod layout_settings;
 mod markdown;
+#[cfg(windows)]
+mod native_menu;
 mod search_ui;
 mod source_search;
 #[cfg(windows)]
