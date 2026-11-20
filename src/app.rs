@@ -201,6 +201,8 @@ pub struct NativeMarkdownApp {
     #[cfg(windows)]
     native_popup_open: bool,
     appearance: Appearance,
+    reading_width: u16,
+    reading_width_follows_zoom: bool,
     settings_open: bool,
     document: Document,
     recent: crate::recent::Recent,
@@ -356,6 +358,66 @@ impl NativeMarkdownApp {
                             .text_xs()
                             .text_color(rgb(p.muted))
                             .child("Applied immediately · Saved for next time"),
+                    )
+                    .child(
+                        div()
+                            .v_flex()
+                            .gap_3()
+                            .mt_3()
+                            .child(div().font_semibold().child("Reading width · 正文宽度"))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(rgb(p.muted))
+                                    .child("100% 缩放时的宽度上限；始终适应阅读区。"),
+                            )
+                            .child(
+                                div().h_flex().gap_2().flex_wrap().children(
+                                    [
+                                        (720u16, "紧凑 · 720"),
+                                        (980, "标准 · 980"),
+                                        (1280, "宽 · 1280"),
+                                        (0, "铺满"),
+                                    ]
+                                    .into_iter()
+                                    .map(|(width, label)| {
+                                        Button::new(("reading-width", width as usize))
+                                            .label(label)
+                                            .small()
+                                            .selected(self.reading_width == width)
+                                            .debug_selector(move || {
+                                                format!("reading-width-{width}")
+                                            })
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.reading_width = width;
+                                                cx.notify();
+                                            }))
+                                    }),
+                                ),
+                            )
+                            .child(
+                                Button::new("reading-width-follow-zoom")
+                                    .label(if self.reading_width_follows_zoom {
+                                        "✓ 宽度随放大比例扩展"
+                                    } else {
+                                        "宽度随放大比例扩展"
+                                    })
+                                    .accessibility_label("宽度随放大比例扩展")
+                                    .selected(self.reading_width_follows_zoom)
+                                    .disabled(self.reading_width == 0)
+                                    .debug_selector(|| "reading-width-follow-zoom".into())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.reading_width_follows_zoom =
+                                            !this.reading_width_follows_zoom;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(p.muted))
+                                    .child("放大时增加宽度，最多铺满阅读区。当前仅本次运行生效。"),
+                            ),
                     ),
             )
     }
@@ -454,6 +516,7 @@ impl NativeMarkdownApp {
                 "zoom":self.zoom.factor(), "heading":heading, "navigation":self.outline_jump_request,
                 "query":if self.search_open { self.search_query.as_str() } else { "" }, "occurrence":self.active_hit.saturating_sub(preceding), "searchRequest":self.search_request,
                 "theme":self.appearance.reader_settings(),
+                "readingWidth":self.reading_width,"widthFollowsZoom":self.reading_width_follows_zoom,
                 "sync":{"enabled":sync_enabled,"revision":self.scroll_sync.revision(),"base":offset},
                 "searchOpen":self.search_open,
                 "nativeSearchFocus":self.search_open && self.search_input.read(cx).focus_handle(cx).is_focused(window),
@@ -784,6 +847,8 @@ impl NativeMarkdownApp {
             #[cfg(windows)]
             native_popup_open: false,
             appearance: layout.appearance,
+            reading_width: 980,
+            reading_width_follows_zoom: true,
             settings_open: false,
             document,
             recent,
@@ -3518,6 +3583,45 @@ mod tests {
                 assert_eq!(app.view_mode, ViewMode::Preview);
             });
         });
+    }
+
+    #[gpui::test]
+    fn reading_width_controls_preserve_document_and_mode(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let mut app = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| NativeMarkdownApp::new(None, window, cx));
+            app = Some(view.clone());
+            gpui_component::Root::new(view, window, cx)
+        });
+        let app = app.unwrap();
+        cx.simulate_resize(size(px(1180.0), px(980.0)));
+        app.update(cx, |app, cx| {
+            app.settings_open = true;
+            app.view_mode = ViewMode::Split;
+            cx.notify();
+        });
+        for (selector, width, follow) in [
+            ("reading-width-720", 720, true),
+            ("reading-width-follow-zoom", 720, false),
+            ("reading-width-1280", 1280, false),
+            ("reading-width-0", 0, false),
+            ("reading-width-follow-zoom", 0, false), // Disabled while using full width.
+            ("reading-width-980", 980, false),
+        ] {
+            draw_app(cx);
+            let position = cx.debug_bounds(selector).unwrap().center();
+            cx.simulate_mouse_down(position, gpui::MouseButton::Left, Modifiers::default());
+            cx.simulate_mouse_up(position, gpui::MouseButton::Left, Modifiers::default());
+            draw_app(cx);
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.reading_width, width, "{selector}");
+                assert_eq!(app.reading_width_follows_zoom, follow, "{selector}");
+                assert_eq!(app.view_mode, ViewMode::Split);
+                assert!(app.document.content.is_empty());
+                assert!(!app.document.is_dirty());
+            });
+        }
     }
 
     #[gpui::test]

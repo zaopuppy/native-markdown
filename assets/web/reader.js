@@ -140,7 +140,13 @@ window.readerFind = (query, occurrence=0) => {
   const selected=ranges[Math.min(occurrence,ranges.length-1)]; getSelection().addRange(selected);
   selected.startContainer.parentElement.scrollIntoView({block:'center'});
 };
-window.readerZoom = factor => {document.documentElement.style.fontSize=`${16*factor}px`;};
+window.readerZoom = factor => {
+  document.documentElement.style.fontSize=`${16*factor}px`;
+  // The configured width is a 100% baseline. Enlarging type can use spare
+  // viewport space; the block's auto width still prevents horizontal overflow.
+  const width=Number.isFinite(state.readingWidth)?state.readingWidth:980;
+  root.style.setProperty('--reading-width',width===0?'none':`${width*(state.widthFollowsZoom===false?1:Math.max(1,factor))}px`);
+};
 function applyState() {
   window.readerZoom(state.zoom);
   if(loading) return;

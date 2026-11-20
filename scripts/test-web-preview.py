@@ -277,6 +277,28 @@ Text after broken Mermaid.
                 page.keyboard.press('Control+1')
                 page.wait_for_function('(width) => innerWidth > width * .9', arg=width)
             print(json.dumps({'result':'pass', 'svgSelection':selected, 'expandedViewer':True, 'inlineStatePreserved':True, 'inlineSVG':True, 'zoom':True, 'dragPan':True, 'localImage':True, 'math':True, 'codeHighlight':True, 'failureIsolation':True, 'sanitization':True, 'darkTheme':True}, ensure_ascii=False))
+            # Test physical line width in a wide and narrow real WebView viewport.
+            # CDP changes only viewport metrics, without touching desktop settings.
+            session = browser.contexts[0].new_cdp_session(page)
+            saved = page.evaluate('state')
+            session.send('Emulation.setDeviceMetricsOverride', dict(width=1800,height=850,deviceScaleFactor=1,mobile=False))
+            for width, zoom, follow, expected in [
+                (720,1,True,720),(980,1,True,980),(1280,1,True,1280),
+                (980,1.5,True,1470),(980,2.5,True,1792),
+                (980,2,False,980),(980,.5,True,980),(0,2,True,1792),
+            ]:
+                page.evaluate('p=>readerConfigure({...state,...p})', dict(readingWidth=width,zoom=zoom,widthFollowsZoom=follow))
+                actual=page.locator('main').evaluate('e=>e.getBoundingClientRect().width')
+                # The system scrollbar may be overlay or consume up to 8px.
+                assert abs(actual-expected)<=8, (width,zoom,follow,actual,expected)
+                assert page.evaluate('parseFloat(getComputedStyle(document.documentElement).fontSize)') == 16*zoom
+            session.send('Emulation.setDeviceMetricsOverride', dict(width=440,height=850,deviceScaleFactor=1,mobile=False))
+            page.evaluate('readerConfigure({...state,readingWidth:1280,zoom:2.5,widthFollowsZoom:true})')
+            assert page.locator('main').evaluate('e=>e.getBoundingClientRect().width') <= 440
+            assert page.evaluate('document.documentElement.scrollWidth<=innerWidth'), 'Width/zoom must not create page-level horizontal overflow'
+            page.evaluate('p=>readerConfigure(p)', saved)
+            session.send('Emulation.clearDeviceMetricsOverride')
+            print('PASS: configurable reading width, zoom-follow toggle, full width and narrow viewport')
             browser.close()
     except Exception:
         log.flush()

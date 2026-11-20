@@ -8,7 +8,7 @@
 ::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
 ::highlight(search) { background: #ffc857; color:#211a0e; }
 body { margin: 0; }
-main { max-width: 980px; margin: auto; padding: 28px 36px 80px; overflow-wrap: anywhere; }
+main { max-width: var(--reading-width, 980px); margin: auto; padding: 28px 36px 80px; overflow-wrap: anywhere; }
 .reading-section { content-visibility: auto; contain-intrinsic-size: auto 500px; }
 h1,h2,h3,h4,h5,h6 { line-height: 1.35; scroll-margin-top: 24px; }
 h1 { font-size: 2em; } h2 { margin-top: 1.7em; border-bottom: 1px solid var(--border); padding-bottom: .3em; }
