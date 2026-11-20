@@ -27,16 +27,16 @@ function button(label, action, tools) {
 }
 async function renderDiagram(box, code, index, currentRevision) {
   if (revision !== currentRevision || !box.isConnected) return;
-  const began = performance.now();
+  const began = performance.now(), requestedTheme = state.theme?.id;
   try {
     if (index >= 64 || code.length > 262144) throw new Error('Diagram exceeds the 64 diagrams / 256 KiB limit');
     if (/%%\s*\{|^\s*---/m.test(code)) throw new Error('Document Mermaid configuration is disabled');
     await loadScript('mermaid');
-    if (revision !== currentRevision) return;
+    if (revision !== currentRevision || requestedTheme !== state.theme?.id) return;
     mermaid.initialize({startOnLoad: false, securityLevel: 'strict', htmlLabels: false, maxTextSize: 262144, maxEdges: 1500,
-      suppressErrorRendering: true, flowchart: {htmlLabels: false}, theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'default'});
+      suppressErrorRendering: true, flowchart: {htmlLabels: false}, theme: state.theme?.dark ? 'dark' : 'default'});
     const {svg} = await mermaid.render(`diagram-${currentRevision}-${index}`, code);
-    if (revision !== currentRevision || !box.isConnected) return;
+    if (revision !== currentRevision || !box.isConnected || requestedTheme !== state.theme?.id) return;
     const tools = document.createElement('div'); tools.className = 'diagram-tools';
     const stage = document.createElement('div'); stage.className = 'diagram-stage';
     stage.innerHTML = DOMPurify.sanitize(svg, {USE_PROFILES: {svg:true, svgFilters:true}, FORBID_TAGS: ['foreignObject', 'a', 'image', 'script']});
@@ -69,7 +69,7 @@ async function renderDiagram(box, code, index, currentRevision) {
     box.replaceChildren(tools, stage); zoom(1);
     notify('diagram-ready', {index, ms:performance.now()-began, nodes:drawing.querySelectorAll('*').length});
   } catch(error) {
-    if (revision !== currentRevision || !box.isConnected) return;
+    if (revision !== currentRevision || !box.isConnected || requestedTheme !== state.theme?.id) return;
     const message = document.createElement('div'); message.className = 'diagram-error'; message.textContent = `Mermaid: ${error.message || error}`;
     const source = document.createElement('pre'); source.textContent = code; box.replaceChildren(message,source);
     notify('diagram-error', {index});
@@ -144,7 +144,23 @@ function applyState() {
     if(state.nativeSearchFocus) notify('search-applied',{request:state.searchRequest});
   }
 }
-window.readerConfigure = next => {state=next;applyState();};
+window.readerConfigure = next => {
+  const themeChanged = next.theme && state.theme?.id !== next.theme.id;
+  state=next;
+  if (next.theme) {
+    const element = document.documentElement;
+    element.dataset.theme = next.theme.id;
+    element.dataset.dark = String(next.theme.dark);
+    element.style.colorScheme = next.theme.dark ? 'dark' : 'light';
+    for (const [name, value] of Object.entries(next.theme.colors)) element.style.setProperty(`--${name}`, value);
+    if (themeChanged) root.querySelectorAll('.diagram').forEach(box => {
+      if (!box.readerDiagram) return;
+      box.textContent = 'Mermaid · waiting to render';
+      observer?.observe(box);
+    });
+  }
+  applyState();
+};
 root.addEventListener('click', event => {
   const image=event.target.closest('img');
   if(image && !image.closest('a') && image.naturalWidth) {showImage(image);return;}
@@ -185,7 +201,7 @@ document.addEventListener('keydown', event => {
 document.addEventListener('wheel',event=>{
   if(event.ctrlKey && !event.target.closest('.diagram-stage')) {event.preventDefault();notify('zoom-wheel',{delta:event.deltaY});}
 },{passive:false});
-matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>notify('theme-changed'));
+
 notify('ready');
 window.readerSetDocument(null, true);
 window.readerReload = async reset => { const ticket = ++reloadTicket; loading=true; const response = await fetch('/document'); const html = await response.text(); if(ticket===reloadTicket) {loading=false;window.readerSetDocument(html,reset);} };

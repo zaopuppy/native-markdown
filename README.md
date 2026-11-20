@@ -15,6 +15,7 @@ A quiet, reader-first Markdown desktop app built with Rust and GPUI Component. W
 - **Desktop integration**: Native dialogs, drag-and-drop, and command-line paths
 - **Local-image safety**: Relative images are restricted to the active document directory; remote images are disabled by default
 - **Reading metadata**: Word count and estimated reading time
+- **Appearance settings**: Open the toolbar gear to choose Paper, Sepia, Sage, Midnight or Nord. The app, source editor, reading surface and Mermaid diagrams share the selected theme; the choice is saved across restarts.
 
 ## Shortcuts
 

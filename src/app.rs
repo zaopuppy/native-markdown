@@ -21,6 +21,7 @@ use gpui_component::Theme;
 use gpui_component::{Disableable as _, Icon, Selectable as _, Sizable as _, StyledExt as _};
 use rfd::AsyncFileDialog;
 
+use crate::appearance::{Appearance, Palette};
 use crate::benchmark::BenchmarkScenario;
 use crate::document::Document;
 use crate::file_tree::{self, EntryKind, FileTree, VisibleRow};
@@ -33,18 +34,6 @@ const FILE_TREE_CONTEXT: &str = "NativeMarkdownFileTree";
 const BASE_MONO_FONT_SIZE: f32 = 13.0;
 const FILE_TREE_HIDE_BELOW: f32 = 760.0;
 const OUTLINE_HIDE_BELOW: f32 = 1000.0;
-
-fn state_button(button: Button, selected: bool) -> Button {
-    button
-        .ghost()
-        .selected(selected)
-        .border_0()
-        .rounded_md()
-        .when(selected, |button| {
-            button.bg(rgb(0xe2e8e5)).text_color(rgb(0x285547))
-        })
-        .when(!selected, |button| button.text_color(rgb(0x656b67)))
-}
 
 // Inline vectors keep toolbar icons crisp at every DPI without an external asset loader.
 fn tool_icon(paths: &str) -> Icon {
@@ -64,6 +53,43 @@ fn tool_button(id: &'static str, label: &'static str, paths: &str) -> Button {
         .rounded_md()
         .w(px(28.0))
         .h(px(28.0))
+}
+
+// Native caption hit testing retains Windows snapping, system actions and the
+// existing on_window_should_close guard. Inline SVGs need no icon asset loader.
+fn caption_control(
+    id: &'static str,
+    label: &'static str,
+    paths: &str,
+    area: gpui::WindowControlArea,
+    palette: Palette,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .window_control_area(area)
+        .h_full()
+        .w(px(38.0))
+        .flex_none()
+        .h_flex()
+        .items_center()
+        .justify_center()
+        .text_color(rgb(palette.text))
+        .hover(move |style| {
+            style
+                .bg(rgb(if id == "window-close" {
+                    0xc42b1c
+                } else {
+                    palette.hover
+                }))
+                .text_color(rgb(if id == "window-close" {
+                    0xffffff
+                } else {
+                    palette.text
+                }))
+        })
+        .child(tool_icon(paths))
 }
 
 fn outline_indent(level: u8) -> f32 {
@@ -174,6 +200,8 @@ pub struct NativeMarkdownApp {
     web_starting: bool,
     #[cfg(windows)]
     native_popup_open: bool,
+    appearance: Appearance,
+    settings_open: bool,
     document: Document,
     editor: Entity<EditorState>,
     search_input: Entity<InputState>,
@@ -214,6 +242,120 @@ pub struct NativeMarkdownApp {
 }
 
 impl NativeMarkdownApp {
+    fn state_button(&self, button: Button, selected: bool) -> Button {
+        button
+            .ghost()
+            .selected(selected)
+            .border_0()
+            .rounded_md()
+            .when(selected, |button| {
+                button
+                    .bg(rgb(self.palette().selection))
+                    .text_color(rgb(self.palette().accent))
+            })
+            .when(!selected, |button| {
+                button.text_color(rgb(self.palette().muted))
+            })
+    }
+
+    fn palette(&self) -> Palette {
+        self.appearance.palette()
+    }
+
+    fn set_appearance(&mut self, appearance: Appearance, cx: &mut Context<Self>) {
+        self.appearance = appearance;
+        appearance.apply(cx);
+        self.persist_layout();
+        cx.notify();
+    }
+
+    fn settings_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = self.palette();
+        div()
+            .id("settings-panel")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .p_6()
+            .bg(rgb(p.canvas))
+            .child(
+                div()
+                    .v_flex()
+                    .max_w(px(560.0))
+                    .mx_auto()
+                    .gap_4()
+                    .child(
+                        div()
+                            .h_flex()
+                            .items_center()
+                            .justify_between()
+                            .child(div().text_xl().font_semibold().child("Settings"))
+                            .child(
+                                Button::new("close-settings")
+                                    .label("Done")
+                                    .small()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.settings_open = false;
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .v_flex()
+                            .gap_1()
+                            .child(div().font_semibold().child("Appearance · 外观"))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(rgb(p.muted))
+                                    .child("Choose a theme for the app, editor and reading area."),
+                            ),
+                    )
+                    .children(Appearance::ALL.into_iter().map(|appearance| {
+                        let colors = appearance.palette();
+                        let selected = appearance == self.appearance;
+                        Button::new(appearance.id())
+                            .accessibility_label(appearance.label())
+                            .w_full()
+                            .h(px(52.0))
+                            .ghost()
+                            .border_1()
+                            .border_color(rgb(if selected { p.accent } else { p.border }))
+                            .bg(rgb(if selected { p.selection } else { p.surface }))
+                            .child(
+                                div()
+                                    .h_flex()
+                                    .w_full()
+                                    .items_center()
+                                    .gap_3()
+                                    .child(
+                                        div()
+                                            .w(px(30.0))
+                                            .h(px(30.0))
+                                            .rounded_md()
+                                            .border_1()
+                                            .border_color(rgb(colors.border))
+                                            .bg(rgb(colors.canvas))
+                                            .text_color(rgb(colors.text))
+                                            .child("Aa"),
+                                    )
+                                    .child(div().flex_1().child(appearance.label()))
+                                    .child(if selected { "✓" } else { "" }),
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.set_appearance(appearance, cx)
+                            }))
+                    }))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(p.muted))
+                            .child("Applied immediately · Saved for next time"),
+                    ),
+            )
+    }
+
     #[cfg(windows)]
     fn suspend_for_popup(
         &mut self,
@@ -247,7 +389,8 @@ impl NativeMarkdownApp {
             && !self.dialog_in_flight
             && !overlay_tree
             && !overlay_outline
-            && !self.native_popup_open;
+            && !self.native_popup_open
+            && !self.settings_open;
         let (source, offset) = self.preview_source();
         if self.web_preview.is_none() && !self.web_starting && visible {
             use futures::StreamExt as _;
@@ -299,6 +442,7 @@ impl NativeMarkdownApp {
             view.update(source, self.document.path.as_deref(), offset, serde_json::json!({
                 "zoom":self.zoom.factor(), "heading":heading, "navigation":self.outline_jump_request,
                 "query":if self.search_open { self.search_query.as_str() } else { "" }, "occurrence":self.active_hit.saturating_sub(preceding), "searchRequest":self.search_request,
+                "theme":self.appearance.reader_settings(),
                 "searchOpen":self.search_open,
                 "nativeSearchFocus":self.search_open && self.search_input.read(cx).focus_handle(cx).is_focused(window),
             }));
@@ -581,6 +725,8 @@ impl NativeMarkdownApp {
             web_starting: false,
             #[cfg(windows)]
             native_popup_open: false,
+            appearance: layout.appearance,
+            settings_open: false,
             document,
             editor,
             search_input,
@@ -656,6 +802,7 @@ impl NativeMarkdownApp {
 
     fn persist_layout(&self) {
         let settings = LayoutSettings {
+            appearance: self.appearance,
             file_tree_open: self.file_tree_open,
             outline_open: self.outline_open,
             file_tree_width: self.file_tree_width,
@@ -1507,20 +1654,20 @@ impl NativeMarkdownApp {
             r#"<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>"#)
             .on_click(cx.listener(|this, _, window, cx| this.open_toolbar_menu(false, window, cx)));
         let modes = div().h_flex().gap(px(2.0)).p(px(2.0)).rounded_md()
-            .bg(rgb(0xeeefec))
-            .child(state_button(
+            .bg(rgb(self.palette().panel))
+            .child(self.state_button(
                 tool_button("preview-mode", "Preview",
                     r#"<path d="M2 4h7a3 3 0 0 1 3 3v14a4 4 0 0 0-4-3H2zM22 4h-7a3 3 0 0 0-3 3v14a4 4 0 0 1 4-3h6z"/>"#)
                     .when(width >= 760.0, |b| b.label("Preview").w_auto().px_2()),
                 self.view_mode == ViewMode::Preview)
                 .on_click(cx.listener(|this, _, _, cx| this.set_view_mode(ViewMode::Preview, cx))))
-            .child(state_button(
+            .child(self.state_button(
                 tool_button("split-mode", "Split",
                     r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/>"#)
                     .when(width >= 760.0, |b| b.label("Split").w_auto().px_2()),
                 self.view_mode == ViewMode::Split)
                 .on_click(cx.listener(|this, _, _, cx| this.set_view_mode(ViewMode::Split, cx))))
-            .child(state_button(
+            .child(self.state_button(
                 tool_button("source-mode", "Source",
                     r#"<path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-13-2 20"/>"#)
                     .when(width >= 760.0, |b| b.label("Source").w_auto().px_2()),
@@ -1529,17 +1676,19 @@ impl NativeMarkdownApp {
         div()
             .debug_selector(|| "application-toolbar".into())
             .h_flex()
+            .w_full()
+            .min_w_0()
             .h(px(42.0))
             .flex_none()
             .items_center()
             .gap_1()
-            .px_3()
+            .pl_3()
             .border_b_1()
-            .border_color(rgb(0xdde0db))
-            .bg(rgb(0xf8f9f6))
+            .border_color(rgb(self.palette().border))
+            .bg(rgb(self.palette().surface))
             .child(file_menu)
             .child(
-                state_button(
+                self.state_button(
                     tool_button(
                         "toggle-file-tree",
                         "Files",
@@ -1551,12 +1700,17 @@ impl NativeMarkdownApp {
             )
             .child(
                 div()
+                    .id("window-drag-region")
+                    .h_full()
+                    .h_flex()
+                    .items_center()
+                    .when(cfg!(windows), |view| view.window_control_area(gpui::WindowControlArea::Drag))
                     .flex_1()
                     .min_w_0()
                     .px_2()
                     .text_sm()
                     .truncate()
-                    .text_color(rgb(0x656b67))
+                    .text_color(rgb(self.palette().muted))
                     .child(format!(
                         "{}{}",
                         self.document.display_name(),
@@ -1564,7 +1718,7 @@ impl NativeMarkdownApp {
                     )),
             )
             .child(modes)
-            .child(div().w(px(1.0)).h(px(16.0)).mx_2().bg(rgb(0xdde0db)))
+            .child(div().w(px(1.0)).h(px(16.0)).mx_2().bg(rgb(self.palette().border)))
             .child(
                 tool_button(
                     "find-document",
@@ -1574,7 +1728,7 @@ impl NativeMarkdownApp {
                 .on_click(cx.listener(|this, _, window, cx| this.show_search(window, cx))),
             )
             .child(
-                state_button(
+                self.state_button(
                     tool_button(
                         "toggle-outline",
                         "Outline",
@@ -1584,7 +1738,20 @@ impl NativeMarkdownApp {
                 )
                 .on_click(cx.listener(|this, _, window, cx| this.toggle_outline(window, cx))),
             )
+            .child(tool_button("settings", "Settings", r#"<circle cx="12" cy="12" r="3"/><path d="m9 3 1-2h4l1 2 3 2 2 .3 2 3-1 2v3l1 2-2 3-2 .3-3 2-1 2h-4l-1-2-3-2-2-.3-2-3 1-2v-3l-1-2 2-3L6 5Z"/>"#)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.settings_open = !this.settings_open;
+                    this.focus_native_surface();
+                    this.app_focus.focus(window, cx);
+                    cx.notify();
+                })))
             .child(more_menu)
+            .when(cfg!(windows), |view| view
+                .child(div().w(px(8.0)))
+                .child(caption_control("window-minimize", "Minimize", r#"<path d="M6 12h12"/>"#, gpui::WindowControlArea::Min, self.palette()))
+                .child(caption_control("window-maximize", if window.is_maximized() { "Restore" } else { "Maximize" },
+                    if window.is_maximized() { r#"<path d="M8 8V5h11v11h-3"/><rect x="5" y="8" width="11" height="11"/>"# } else { r#"<rect x="6" y="6" width="12" height="12"/>"# }, gpui::WindowControlArea::Max, self.palette()))
+                .child(caption_control("window-close", "Close", r#"<path d="m7 7 10 10M7 17 17 7"/>"#, gpui::WindowControlArea::Close, self.palette())))
     }
 
     fn search_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1600,8 +1767,8 @@ impl NativeMarkdownApp {
             .gap_2()
             .items_center()
             .border_b_1()
-            .border_color(rgb(0xdde0db))
-            .bg(rgb(0xf8f9f6))
+            .border_color(rgb(self.palette().border))
+            .bg(rgb(self.palette().surface))
             .child(
                 div()
                     .flex_1()
@@ -1612,7 +1779,7 @@ impl NativeMarkdownApp {
             .child(
                 div()
                     .text_xs()
-                    .text_color(rgb(0x6b716b))
+                    .text_color(rgb(self.palette().muted))
                     .child(if count == 0 {
                         "No matches".to_owned()
                     } else {
@@ -1679,7 +1846,7 @@ impl NativeMarkdownApp {
             .p_2()
             .text_sm()
             .border_b_1()
-            .border_color(rgb(0xdde0db))
+            .border_color(rgb(self.palette().border))
             .child(
                 div()
                     .h_flex()
@@ -1762,7 +1929,7 @@ impl NativeMarkdownApp {
                             ),
                     )
                     .child(
-                        state_button(
+                        self.state_button(
                             Button::new("tree-show-hidden").label("Hidden").small(),
                             self.file_tree.show_hidden(),
                         )
@@ -1781,7 +1948,7 @@ impl NativeMarkdownApp {
                 view.child(
                     div()
                         .text_xs()
-                        .text_color(rgb(0x4d6c5e))
+                        .text_color(rgb(self.palette().accent))
                         .child("Current file is not shown in this tree"),
                 )
             });
@@ -1801,7 +1968,7 @@ impl NativeMarkdownApp {
                     .gap_2()
                     .p_4()
                     .text_sm()
-                    .text_color(rgb(0x6b716b))
+                    .text_color(rgb(self.palette().muted))
                     .child("Save the document to show its folder.")
                     .child(
                         Button::new("tree-empty-save")
@@ -1841,10 +2008,10 @@ impl NativeMarkdownApp {
                                 tool_icon(r#"<path d="M3 18V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v2"/><path d="M3 10h19l-3 10H5z" fill="currentColor" fill-opacity=".24"/>"#)
                             } else {
                                 tool_icon(r#"<path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="currentColor" fill-opacity=".24"/><path d="M3 8h18"/>"#)
-                            }.text_color(rgb(0xa87520))
+                            }.text_color(rgb(self.palette().warning))
                         } else {
                             tool_icon(r#"<path d="M14 2H5a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9z" fill="currentColor" fill-opacity=".10"/><path d="M14 2v7h7M6 17v-6l3 4 3-4v6m5-6v6m-2-2 2 2 2-2"/>"#)
-                                .text_color(rgb(0x477a9a))
+                                .text_color(rgb(self.palette().link))
                         }.size_5();
                         let click_path = path.clone();
                         let path_tooltip = path.display().to_string();
@@ -1861,14 +2028,18 @@ impl NativeMarkdownApp {
                             .gap(px(6.0))
                             .text_sm()
                             .cursor_pointer()
-                            .when(is_active, |view| view.bg(rgb(0xdfe7de)).font_semibold())
-                            .when(is_cursor && !is_active, |view| view.bg(rgb(0xe7ece5)))
-                            .hover(|view| view.bg(rgb(0xe7ece5)))
+                            .when(is_active, |view| {
+                                view.bg(rgb(self.palette().selection)).font_semibold()
+                            })
+                            .when(is_cursor && !is_active, |view| {
+                                view.bg(rgb(self.palette().hover))
+                            })
+                            .hover(|view| view.bg(rgb(self.palette().hover)))
                             .child(
                                 div()
                                     .w(px(10.0))
                                     .flex_none()
-                                    .text_color(rgb(0x6b716b))
+                                    .text_color(rgb(self.palette().muted))
                                     .when(is_directory, |view| {
                                         view.child(
                                             tool_icon(if !traversable {
@@ -1943,7 +2114,7 @@ impl NativeMarkdownApp {
                                 .pl(px(24.0 + depth as f32 * 16.0))
                                 .py_1()
                                 .text_xs()
-                                .text_color(rgb(0x6b716b))
+                                .text_color(rgb(self.palette().muted))
                                 .child(if refreshing {
                                     "Refreshing…"
                                 } else {
@@ -1957,7 +2128,7 @@ impl NativeMarkdownApp {
                                 .pl(px(24.0 + depth as f32 * 16.0))
                                 .py_1()
                                 .text_xs()
-                                .text_color(rgb(0x8b8275))
+                                .text_color(rgb(self.palette().muted))
                                 .child("No Markdown files or folders"),
                         );
                     }
@@ -1974,7 +2145,7 @@ impl NativeMarkdownApp {
                                 .pr_2()
                                 .gap_2()
                                 .text_xs()
-                                .text_color(rgb(0x9b392a))
+                                .text_color(rgb(self.palette().danger))
                                 .child(div().flex_1().min_w_0().truncate().child(message))
                                 .child(
                                     Button::new(("tree-retry", row_index))
@@ -2009,8 +2180,8 @@ impl NativeMarkdownApp {
             .min_h_0()
             .overflow_hidden()
             .border_r_1()
-            .border_color(rgb(0xdde0db))
-            .bg(rgb(0xf1f3ef))
+            .border_color(rgb(self.palette().border))
+            .bg(rgb(self.palette().surface))
             .child(header)
             .child(body)
     }
@@ -2029,8 +2200,8 @@ impl NativeMarkdownApp {
             .text_sm()
             .gap_1()
             .border_l_1()
-            .border_color(rgb(0xdde0db))
-            .bg(rgb(0xf1f3ef))
+            .border_color(rgb(self.palette().border))
+            .bg(rgb(self.palette().surface))
             .child(
                 div()
                     .debug_selector(|| "outline-mode-toolbar".into())
@@ -2039,9 +2210,9 @@ impl NativeMarkdownApp {
                     .mb_2()
                     .pb_2()
                     .border_b_1()
-                    .border_color(rgb(0xdde0db))
+                    .border_color(rgb(self.palette().border))
                     .child(
-                        state_button(
+                        self.state_button(
                             Button::new("outline-jump-mode").label("Jump").small(),
                             self.outline_mode == OutlineMode::Jump,
                         )
@@ -2056,7 +2227,7 @@ impl NativeMarkdownApp {
                         })),
                     )
                     .child(
-                        state_button(
+                        self.state_button(
                             Button::new("outline-focus-mode").label("Focus").small(),
                             self.outline_mode == OutlineMode::Focus,
                         )
@@ -2075,7 +2246,7 @@ impl NativeMarkdownApp {
                 div()
                     .debug_selector(|| "outline-full-document".into())
                     .child(
-                        state_button(
+                        self.state_button(
                             Button::new("show-full-document")
                                 .accessibility_label("Full document")
                                 .child(
@@ -2145,7 +2316,7 @@ impl NativeMarkdownApp {
                 div()
                     .p_3()
                     .text_sm()
-                    .text_color(rgb(0x6b716b))
+                    .text_color(rgb(self.palette().muted))
                     .child("This document has no headings"),
             );
         }
@@ -2201,7 +2372,7 @@ impl NativeMarkdownApp {
             .min_w_0()
             .min_h_0()
             .overflow_hidden()
-            .bg(rgb(0xf7f8f5))
+            .bg(rgb(self.palette().surface))
             .child(
                 Editor::new(&self.editor)
                     .size_full()
@@ -2218,7 +2389,7 @@ impl NativeMarkdownApp {
             .items_center()
             .justify_center()
             .gap_3()
-            .bg(rgb(0xfafbf8))
+            .bg(rgb(self.palette().canvas))
             .child(
                 div()
                     .text_3xl()
@@ -2227,7 +2398,7 @@ impl NativeMarkdownApp {
             )
             .child(
                 div()
-                    .text_color(rgb(0x6b716b))
+                    .text_color(rgb(self.palette().muted))
                     .child("A quiet native reader powered by GPUI Component."),
             )
             .child(
@@ -2271,7 +2442,7 @@ impl NativeMarkdownApp {
             .child(
                 div()
                     .text_sm()
-                    .text_color(rgb(0x6b716b))
+                    .text_color(rgb(self.palette().muted))
                     .child("Drop a .md file anywhere · Ctrl+O to open"),
             )
     }
@@ -2287,7 +2458,7 @@ impl NativeMarkdownApp {
                     .h_flex()
                     .size_full()
                     .child(self.editor_panel())
-                    .child(div().w(px(1.0)).h_full().bg(rgb(0xdde0db)))
+                    .child(div().w(px(1.0)).h_full().bg(rgb(self.palette().border)))
                     .child(self.preview_panel())
                     .into_any_element(),
             }
@@ -2346,6 +2517,7 @@ impl NativeMarkdownApp {
                         app.outline_width
                     };
                     let mut settings = LayoutSettings {
+                        appearance: app.appearance,
                         file_tree_open: app.file_tree_open,
                         outline_open: app.outline_open,
                         file_tree_width: app.file_tree_width,
@@ -2419,9 +2591,9 @@ impl NativeMarkdownApp {
             |notice| notice.text.clone(),
         );
         let left_color = if self.notice.as_ref().is_some_and(|notice| notice.is_error) {
-            rgb(0x9b392a)
+            rgb(self.palette().danger)
         } else {
-            rgb(0x6b716b)
+            rgb(self.palette().muted)
         };
         div()
             .h_flex()
@@ -2431,10 +2603,10 @@ impl NativeMarkdownApp {
             .gap_3()
             .px_3()
             .border_t_1()
-            .border_color(rgb(0xdde0db))
-            .bg(rgb(0xf8f9f6))
+            .border_color(rgb(self.palette().border))
+            .bg(rgb(self.palette().surface))
             .text_xs()
-            .text_color(rgb(0x6b716b))
+            .text_color(rgb(self.palette().muted))
             .child(
                 div()
                     .flex_1()
@@ -2537,6 +2709,11 @@ impl Render for NativeMarkdownApp {
                     }
                     window.prevent_default();
                     cx.stop_propagation();
+                } else if this.settings_open && key.key == "escape" {
+                    this.settings_open = false;
+                    cx.notify();
+                    window.prevent_default();
+                    cx.stop_propagation();
                 } else if this.search_open && key.key == "escape" {
                     this.close_search(window, cx);
                     this.app_focus.focus(window, cx);
@@ -2590,11 +2767,15 @@ impl Render for NativeMarkdownApp {
             .relative()
             .size_full()
             .overflow_hidden()
-            .bg(rgb(0xf8f9f6))
-            .text_color(rgb(0x292e2b))
+            .bg(rgb(self.palette().surface))
+            .text_color(rgb(self.palette().text))
             .child(self.toolbar(window, cx))
             .when(self.search_open, |view| view.child(self.search_bar(cx)))
-            .child(self.workspace(window, cx))
+            .child(if self.settings_open {
+                self.settings_panel(cx).into_any_element()
+            } else {
+                self.workspace(window, cx).into_any_element()
+            })
             .child(self.status_bar())
     }
 }

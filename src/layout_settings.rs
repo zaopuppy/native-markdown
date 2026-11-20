@@ -1,3 +1,4 @@
+use crate::appearance::Appearance;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -7,6 +8,7 @@ const DEFAULT_OUTLINE_WIDTH: f32 = 270.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LayoutSettings {
+    pub appearance: Appearance,
     pub file_tree_open: bool,
     pub outline_open: bool,
     pub file_tree_width: f32,
@@ -16,6 +18,7 @@ pub struct LayoutSettings {
 impl Default for LayoutSettings {
     fn default() -> Self {
         Self {
+            appearance: Appearance::default(),
             file_tree_open: true,
             outline_open: true,
             file_tree_width: DEFAULT_FILE_TREE_WIDTH,
@@ -54,6 +57,7 @@ impl LayoutSettings {
                 continue;
             };
             match key.trim() {
+                "theme" => settings.appearance = Appearance::parse(value),
                 "file_tree_open" => {
                     settings.file_tree_open = parse_bool(value).unwrap_or(settings.file_tree_open)
                 }
@@ -86,8 +90,12 @@ impl LayoutSettings {
 
     fn serialize(self) -> String {
         format!(
-            "file_tree_open={}\noutline_open={}\nfile_tree_width={}\noutline_width={}\n",
-            self.file_tree_open, self.outline_open, self.file_tree_width, self.outline_width
+            "file_tree_open={}\noutline_open={}\nfile_tree_width={}\noutline_width={}\ntheme={}\n",
+            self.file_tree_open,
+            self.outline_open,
+            self.file_tree_width,
+            self.outline_width,
+            self.appearance.id()
         )
     }
 }
@@ -121,6 +129,26 @@ fn settings_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn themes_round_trip_with_layout_and_unknown_themes_fall_back() {
+        for appearance in Appearance::ALL {
+            let settings = LayoutSettings {
+                appearance,
+                file_tree_open: false,
+                ..LayoutSettings::default()
+            };
+            assert_eq!(LayoutSettings::parse(&settings.serialize()), settings);
+        }
+        assert_eq!(
+            LayoutSettings::parse("theme=removed-theme\n").appearance,
+            Appearance::Paper
+        );
+        assert_eq!(
+            LayoutSettings::parse("outline_open=false\n").appearance,
+            Appearance::Paper
+        );
+    }
 
     #[test]
     fn parse_is_backward_compatible_and_clamps_widths() {

@@ -30,6 +30,10 @@ with tempfile.TemporaryDirectory(prefix='markdown-web-test-') as directory:
 
 正文可以选择复制，English selectable text.
 
+> A quiet quotation.
+>
+> > A nested quotation.
+
 - [x] Complete task
 - [ ] Pending task
 
@@ -142,8 +146,27 @@ Text after broken Mermaid.
                     throw Error('Reopening search must restore the match');
                 window.readerConfigure({...base,query:'',searchOpen:false,searchRequest:103});
             }""")
+            assert page.locator('blockquote').first.evaluate('(e)=>getComputedStyle(e).borderLeftWidth') == '1px'
+            # An explicit app theme wins over the operating system preference.
             page.emulate_media(color_scheme='dark')
-            assert page.evaluate('getComputedStyle(document.documentElement).backgroundColor') == 'rgb(37, 35, 31)'
+            page.wait_for_function("document.documentElement.dataset.theme === 'paper'")
+            assert page.evaluate('getComputedStyle(document.documentElement).backgroundColor') == 'rgb(250, 251, 248)'
+            for theme_id, canvas, text, dark in [
+                ('sepia','#f8f1e3','#443b30',False),
+                ('sage','#f0f5ef','#2c3b30',False),
+                ('midnight','#202329','#e2e5eb',True),
+                ('nord','#2e3440','#e5e9f0',True),
+                ('paper','#fafbf8','#292e2b',False),
+            ]:
+                page.evaluate("""({id,canvas,text,dark})=>readerConfigure({zoom:1,heading:null,navigation:0,
+                    query:'',occurrence:0,searchRequest:104,theme:{id,dark,colors:{canvas,text}}})""",
+                    dict(id=theme_id,canvas=canvas,text=text,dark=dark))
+                assert page.evaluate('document.documentElement.dataset.theme') == theme_id
+                first.scroll_into_view_if_needed()
+                page.wait_for_selector('.diagram svg text')
+                assert first.locator('svg text').count() > 0
+                assert page.locator('pre code.hljs').first.evaluate('(e)=>getComputedStyle(e).backgroundColor') == 'rgba(0, 0, 0, 0)'
+            page.screenshot(path=str(repo/'tmp/web-preview-themes.png'))
             if not args.poc:
                 # Drive the real shortcut bridge: saving preserves the original Markdown byte-for-byte.
                 before=fixture.stat().st_mtime_ns
