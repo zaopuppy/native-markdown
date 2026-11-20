@@ -13,6 +13,7 @@ A quiet, reader-first Markdown desktop app built with Rust and GPUI Component. W
 - **Find**: Search rendered text and jump between matching sections
 - **Safe file lifecycle**: Atomic saves, Save As, dirty-state warnings, visible errors, and background recovery
 - **Desktop integration**: Native dialogs, drag-and-drop, and command-line paths
+- **Recent files and folders (Windows)**: The File menu reopens up to 20 files and 20 explicitly opened folder roots, newest first. History loads once at startup from `%APPDATA%/NativeMarkdown/recent.json` (64 KiB limit). A successfully opened path absent from its current list triggers one atomic snapshot write; reopening a listed path only updates the in-memory order. There are no timer or exit writes, and listing history does not probe recorded paths. Implicit folder navigation when opening a document does not create a second history write. Write failures keep the in-memory history and show an error.
 - **Local-image safety**: Relative images are restricted to the active document directory; remote images are disabled by default
 - **Reading metadata**: Word count and estimated reading time
 - **Appearance settings**: Open the toolbar gear to choose Paper, Sepia, Sage, Midnight or Nord. The app, source editor, reading surface and Mermaid diagrams share the selected theme; the choice is saved across restarts.

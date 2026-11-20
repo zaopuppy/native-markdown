@@ -5,16 +5,19 @@ use windows_sys::Win32::{
     Graphics::Gdi::ClientToScreen,
     UI::WindowsAndMessaging::{
         AppendMenuW, CreatePopupMenu, DestroyMenu, IsWindow, TrackPopupMenuEx, MF_CHECKED,
-        MF_SEPARATOR, MF_STRING, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTALIGN, TPM_RIGHTBUTTON,
+        MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTALIGN,
+        TPM_RIGHTBUTTON,
     },
 };
 use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u32)]
 pub enum Command {
-    New = 1,
+    New,
     Open,
+    OpenFolder,
+    RecentFile(usize),
+    RecentFolder(usize),
     Save,
     SaveAs,
     Preview,
@@ -26,17 +29,19 @@ pub enum Command {
 }
 
 pub struct Item {
-    label: &'static str,
+    label: String,
     command: Option<Command>,
     checked: bool,
+    children: Option<Vec<Item>>,
 }
 
 impl Item {
-    pub fn command(label: &'static str, command: Command) -> Self {
+    pub fn command(label: impl Into<String>, command: Command) -> Self {
         Self {
-            label,
+            label: label.into(),
             command: Some(command),
             checked: false,
+            children: None,
         }
     }
 
@@ -47,9 +52,19 @@ impl Item {
 
     pub fn separator() -> Self {
         Self {
-            label: "",
+            label: String::new(),
             command: None,
             checked: false,
+            children: None,
+        }
+    }
+
+    pub fn submenu(label: &str, children: Vec<Item>) -> Self {
+        Self {
+            label: label.into(),
+            command: None,
+            checked: false,
+            children: Some(children),
         }
     }
 }
@@ -110,23 +125,53 @@ impl Popup {
                 }
             }
             let menu = OwnedMenu(menu);
-            for item in &self.items {
-                let label: Vec<u16> = item.label.encode_utf16().chain(Some(0)).collect();
-                let flags = if item.command.is_none() {
-                    MF_SEPARATOR
-                } else {
-                    MF_STRING | if item.checked { MF_CHECKED } else { 0 }
-                };
-                anyhow::ensure!(
-                    AppendMenuW(
-                        menu.0,
-                        flags,
-                        item.command.map_or(0, |command| command as usize),
-                        label.as_ptr()
-                    ) != 0,
-                    "could not add popup menu item"
-                );
+            fn append(
+                menu: windows_sys::Win32::UI::WindowsAndMessaging::HMENU,
+                items: &[Item],
+                commands: &mut Vec<Command>,
+            ) -> anyhow::Result<()> {
+                for item in items {
+                    let label: Vec<u16> = item.label.encode_utf16().chain(Some(0)).collect();
+                    let (flags, id) = if let Some(children) = &item.children {
+                        if children.is_empty() {
+                            (MF_STRING | MF_GRAYED, 0)
+                        } else {
+                            let child = unsafe { CreatePopupMenu() };
+                            anyhow::ensure!(!child.is_null(), "could not create submenu");
+                            let child = OwnedMenu(child);
+                            append(child.0, children, commands)?;
+                            anyhow::ensure!(
+                                unsafe {
+                                    AppendMenuW(
+                                        menu,
+                                        MF_POPUP | MF_STRING,
+                                        child.0 as usize,
+                                        label.as_ptr(),
+                                    )
+                                } != 0,
+                                "could not add submenu"
+                            );
+                            std::mem::forget(child); // The parent now owns the submenu.
+                            continue;
+                        }
+                    } else if let Some(command) = item.command {
+                        commands.push(command);
+                        (
+                            MF_STRING | if item.checked { MF_CHECKED } else { 0 },
+                            commands.len(),
+                        )
+                    } else {
+                        (MF_SEPARATOR, 0)
+                    };
+                    anyhow::ensure!(
+                        unsafe { AppendMenuW(menu, flags, id, label.as_ptr()) } != 0,
+                        "could not add popup menu item"
+                    );
+                }
+                Ok(())
             }
+            let mut commands = Vec::new();
+            append(menu.0, &self.items, &mut commands)?;
             let flags = TPM_RETURNCMD
                 | TPM_NONOTIFY
                 | TPM_RIGHTBUTTON
@@ -143,11 +188,10 @@ impl Popup {
                 self.owner as HWND,
                 std::ptr::null(),
             );
-            Ok(self
-                .items
-                .iter()
-                .filter_map(|item| item.command)
-                .find(|command| *command as u32 == selected as u32))
+            Ok(selected
+                .checked_sub(1)
+                .and_then(|index| commands.get(index as usize))
+                .copied())
         }
     }
 }

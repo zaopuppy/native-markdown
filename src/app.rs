@@ -203,6 +203,8 @@ pub struct NativeMarkdownApp {
     appearance: Appearance,
     settings_open: bool,
     document: Document,
+    recent: crate::recent::Recent,
+    recent_folder_pending: Option<PathBuf>,
     editor: Entity<EditorState>,
     search_input: Entity<InputState>,
     outline: Vec<Heading>,
@@ -620,7 +622,7 @@ impl NativeMarkdownApp {
     }
 
     pub fn new(initial_path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let (document, notice) = match initial_path.as_ref() {
+        let (document, mut notice) = match initial_path.as_ref() {
             Some(path) => match Document::open(path.clone()) {
                 Ok(document) => (document, None),
                 Err(error) => (
@@ -717,6 +719,19 @@ impl NativeMarkdownApp {
         let last_path = document.path.clone().or(initial_path);
         let preview_markdown = SharedString::from(document.content.clone());
 
+        #[cfg(not(test))]
+        let mut recent = crate::recent::Recent::load();
+        #[cfg(test)]
+        let mut recent = crate::recent::Recent::default();
+        if let Some(path) = document.path.clone() {
+            if let Err(error) = recent.file(path) {
+                notice = Some(Notice {
+                    text: format!("Could not save recent history: {error}"),
+                    is_error: true,
+                    created_at: Instant::now(),
+                });
+            }
+        }
         let mut app = Self {
             #[cfg(windows)]
             web_preview: None,
@@ -729,6 +744,8 @@ impl NativeMarkdownApp {
             appearance: layout.appearance,
             settings_open: false,
             document,
+            recent,
+            recent_folder_pending: None,
             editor,
             search_input,
             outline,
@@ -818,6 +835,7 @@ impl NativeMarkdownApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.recent_folder_pending = root.clone();
         self.file_tree.set_root(root);
         if let Some(root) = self.file_tree.root().map(Path::to_path_buf) {
             self.load_tree_directory(root, window, cx);
@@ -832,7 +850,13 @@ impl NativeMarkdownApp {
             .as_deref()
             .and_then(Path::parent)
             .map(Path::to_path_buf);
-        self.set_file_tree_root(root, window, cx);
+        // Following a document's directory is implicit navigation, not another folder open.
+        self.recent_folder_pending = None;
+        self.file_tree.set_root(root);
+        if let Some(root) = self.file_tree.root().map(Path::to_path_buf) {
+            self.load_tree_directory(root, window, cx);
+        }
+        cx.notify();
     }
 
     fn tree_up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -896,7 +920,21 @@ impl NativeMarkdownApp {
                 let result = scan.await;
                 cx.update(|_, cx| {
                     app.update(cx, |app, cx| {
+                        let succeeded = result.is_ok();
                         if app.file_tree.finish_load(&path, request, result) {
+                            // A refresh may supersede the initial scan; consume the intent only
+                            // when the current request completes, never on a stale scan result.
+                            if app.recent_folder_pending.as_ref() == Some(&path) {
+                                app.recent_folder_pending = None;
+                                if succeeded {
+                                    if let Err(error) = app.recent.folder(path.clone()) {
+                                        app.set_notice(
+                                            format!("Could not save recent history: {error}"),
+                                            true,
+                                        );
+                                    }
+                                }
+                            }
                             cx.notify();
                         }
                     })
@@ -1174,6 +1212,7 @@ impl NativeMarkdownApp {
                 self.replace_document(document, window, cx);
                 self.reset_tree_to_document(window, cx);
                 self.set_notice("Document opened", false);
+                self.remember_current_file();
             }
             Err(error) => self.set_notice(format!("Could not open document: {error}"), true),
         }
@@ -1190,6 +1229,7 @@ impl NativeMarkdownApp {
                 self.replace_document(document, window, cx);
                 self.view_mode = view_mode;
                 self.set_notice("Document opened", false);
+                self.remember_current_file();
             }
             Err(error) => self.set_notice(format!("Could not open document: {error}"), true),
         }
@@ -1293,6 +1333,7 @@ impl NativeMarkdownApp {
                                     app.reset_tree_to_document(window, cx);
                                 }
                                 app.set_notice("Saved", false);
+                                app.remember_current_file();
                                 if let Some(action) = continuation {
                                     app.perform_document_action(action, window, cx);
                                 } else {
@@ -1310,6 +1351,14 @@ impl NativeMarkdownApp {
                 .ok();
             })
             .detach();
+    }
+
+    fn remember_current_file(&mut self) {
+        if let Some(path) = self.document.path.clone() {
+            if let Err(error) = self.recent.file(path) {
+                self.set_notice(format!("Could not save recent history: {error}"), true);
+            }
+        }
     }
 
     fn set_notice(&mut self, text: impl Into<String>, is_error: bool) {
@@ -1525,10 +1574,46 @@ impl NativeMarkdownApp {
         if cfg!(test) {
             return; // Native tracking needs an interactive desktop; exercised by the UI check.
         }
+        // Native tracking pumps messages; keep command indices tied to this menu's snapshot.
+        let recent_files = self.recent.files.clone();
+        let recent_folders = self.recent.folders.clone();
         let items = if file_menu {
             vec![
                 Item::command("New document\tCtrl+N", Command::New),
                 Item::command("Open…\tCtrl+O", Command::Open),
+                Item::command("Open folder…", Command::OpenFolder),
+                Item::submenu(
+                    "Recent files",
+                    self.recent
+                        .files
+                        .iter()
+                        .enumerate()
+                        .map(|(index, path)| {
+                            Item::command(
+                                path.to_string_lossy()
+                                    .replace('&', "&&")
+                                    .replace(['\t', '\n', '\r'], " "),
+                                Command::RecentFile(index),
+                            )
+                        })
+                        .collect(),
+                ),
+                Item::submenu(
+                    "Recent folders",
+                    self.recent
+                        .folders
+                        .iter()
+                        .enumerate()
+                        .map(|(index, path)| {
+                            Item::command(
+                                path.to_string_lossy()
+                                    .replace('&', "&&")
+                                    .replace(['\t', '\n', '\r'], " "),
+                                Command::RecentFolder(index),
+                            )
+                        })
+                        .collect(),
+                ),
                 Item::separator(),
                 Item::command("Save\tCtrl+S", Command::Save),
                 Item::command("Save as…\tCtrl+Shift+S", Command::SaveAs),
@@ -1578,6 +1663,25 @@ impl NativeMarkdownApp {
                         }
                         Ok(Some(Command::Open)) => {
                             this.request_document_action(DocumentAction::OpenDialog, window, cx)
+                        }
+                        Ok(Some(Command::OpenFolder)) => this.choose_tree_root(window, cx),
+                        Ok(Some(Command::RecentFile(index))) => {
+                            if let Some(path) = recent_files.get(index).cloned() {
+                                if this.document.path.as_ref() != Some(&path) {
+                                    this.request_document_action(
+                                        DocumentAction::OpenPath(path),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            }
+                        }
+                        Ok(Some(Command::RecentFolder(index))) => {
+                            if let Some(path) = recent_folders.get(index).cloned() {
+                                if this.file_tree.root() != Some(path.as_path()) {
+                                    this.set_file_tree_root(Some(path), window, cx);
+                                }
+                            }
                         }
                         Ok(Some(Command::Save)) => this.save_current(window, cx),
                         Ok(Some(Command::SaveAs)) => this.save_as(None, window, cx),
@@ -3224,6 +3328,98 @@ mod tests {
         app.read_with(cx, |app, _| {
             assert_eq!(app.document.content, "unsaved edit");
             assert_eq!(app.view_mode, ViewMode::Source);
+        });
+    }
+
+    #[gpui::test]
+    fn recent_persistence_avoids_implicit_folder_refresh_and_duplicate_writes(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().unwrap();
+        let document = directory.path().join("document.md");
+        let storage = directory.path().join("config/recent.json");
+        std::fs::write(&document, "# Document").unwrap();
+        let (app, cx) = cx.add_window_view(|window, cx| NativeMarkdownApp::new(None, window, cx));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.recent = crate::recent::Recent::load_from(storage.clone());
+                app.open_path(document.clone(), window, cx);
+            });
+        });
+        assert!(storage.is_file(), "new file must be persisted before exit");
+        std::fs::write(&storage, b"sentinel").unwrap();
+        cx.run_until_parked();
+        assert_eq!(
+            std::fs::read(&storage).unwrap(),
+            b"sentinel",
+            "implicit folder scan must not write again"
+        );
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.set_file_tree_root(Some(directory.path().to_path_buf()), window, cx);
+                app.refresh_file_tree(window, cx); // Supersede the initial scan.
+            });
+        });
+        cx.run_until_parked();
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.recent.folders, vec![directory.path().to_path_buf()]);
+        });
+        assert_eq!(
+            crate::recent::Recent::load_from(storage.clone()).folders,
+            vec![directory.path().to_path_buf()]
+        );
+        std::fs::write(&storage, b"sentinel").unwrap();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_path(document.clone(), window, cx);
+                app.set_file_tree_root(Some(directory.path().to_path_buf()), window, cx);
+                app.refresh_file_tree(window, cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_secs(3));
+        cx.run_until_parked();
+        assert_eq!(
+            std::fs::read(&storage).unwrap(),
+            b"sentinel",
+            "reopens and background maintenance must not persist"
+        );
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.set_file_tree_root(Some(directory.path().join("missing")), window, cx);
+            });
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            std::fs::read(&storage).unwrap(),
+            b"sentinel",
+            "failed folder opens must not persist"
+        );
+    }
+
+    #[gpui::test]
+    fn recent_files_track_successful_opens_without_recording_failures(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first.md");
+        let second = directory.path().join("second.md");
+        std::fs::write(&first, "# First").unwrap();
+        std::fs::write(&second, "# Second").unwrap();
+        let (app, cx) = cx
+            .add_window_view(|window, cx| NativeMarkdownApp::new(Some(first.clone()), window, cx));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                assert_eq!(app.recent.files, vec![first.clone()]);
+                app.open_tree_path(second.clone(), window, cx);
+                assert_eq!(app.recent.files, vec![second.clone(), first.clone()]);
+                app.request_document_action(DocumentAction::OpenPath(first.clone()), window, cx);
+                assert_eq!(app.document.path.as_ref(), Some(&first));
+                assert_eq!(app.recent.files, vec![first.clone(), second.clone()]);
+                app.open_path(directory.path().join("missing.md"), window, cx);
+                assert_eq!(app.document.path.as_ref(), Some(&first));
+                assert_eq!(app.recent.files, vec![first.clone(), second.clone()]);
+            });
         });
     }
 
