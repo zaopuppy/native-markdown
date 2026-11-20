@@ -6,6 +6,7 @@ A quiet, reader-first Markdown desktop app built with Rust and GPUI Component. W
 
 - **Reader-first preview**: Preview is the default, with optional split and source-only modes
 - **Preview and source modes**: Switch between preview, split, and source-only layouts
+- **Split scroll sync (Windows)**: Scroll either pane to follow the same Markdown block in the other, including soft-wrapped source. The Split toolbar toggle enables independent scrolling. Mapping and toggle state stay in memory; scrolling adds no file reads, writes or persistent cache. Focus synchronizes within the displayed section; source scrolling outside it leaves the preview in place.
 - **Browser-quality reading**: Selectable text, tables (including safe HTML spans), code highlighting, KaTeX math, local images, links and document zoom
 - **Offline Mermaid diagrams**: Mermaid.js creates inline SVG with zoom, Fit, optional drag-to-pan and selectable labels. Diagrams render when near the viewport; individual failures show their source
 - **Folder tree**: Lazy, read-only Markdown browsing rooted at the document folder, with parent and folder-root navigation
@@ -80,6 +81,7 @@ The earlier native budget harness and renderer prototypes have been retired. His
 cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
 uv run --with playwright python scripts/test-web-preview.py --binary target/release/native-markdown.exe
+uv run --with playwright python scripts/test-scroll-sync.py --binary target/release/native-markdown.exe
 python scripts/test-delayed-web-preview.py --binary target/release/native-markdown.exe --runs 3
 ```
 

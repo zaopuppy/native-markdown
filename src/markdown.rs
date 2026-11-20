@@ -30,6 +30,25 @@ pub fn parser_options() -> Options {
         | Options::ENABLE_GFM
 }
 
+/// Top-level source blocks, shared by the editor's in-memory scroll map and HTML projection.
+pub fn source_blocks(markdown: &str) -> Vec<Range<usize>> {
+    let mut depth = 0usize;
+    let mut blocks = Vec::new();
+    for (event, range) in
+        Parser::new_ext(markdown, parser_options() | Options::ENABLE_MATH).into_offset_iter()
+    {
+        if depth == 0 && !matches!(event, Event::End(_)) {
+            blocks.push(range);
+        }
+        match event {
+            Event::Start(_) => depth += 1,
+            Event::End(_) => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    blocks
+}
+
 pub fn headings(markdown: &str) -> Vec<Heading> {
     let mut result = Vec::new();
     let mut current: Option<(u8, usize, String)> = None;

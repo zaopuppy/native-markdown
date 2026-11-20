@@ -13,6 +13,7 @@ mod markdown;
 #[cfg(windows)]
 mod native_menu;
 mod recent;
+mod scroll_sync;
 mod search_ui;
 mod source_search;
 #[cfg(windows)]

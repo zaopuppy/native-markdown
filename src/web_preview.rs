@@ -197,6 +197,14 @@ impl WebPreview {
         let _ = self.view.evaluate_script(script);
     }
 
+    pub fn scroll_to(&self, position: crate::scroll_sync::Position, revision: u64) {
+        if self.ready && self.allowed {
+            let value = serde_json::json!({"start":position.start,"fraction":position.fraction,
+                "edge":position.edge,"revision":revision});
+            self.eval(&format!("window.readerScrollTo?.({value})"));
+        }
+    }
+
     pub fn focus_parent(&self) {
         let _ = self.view.focus_parent();
     }

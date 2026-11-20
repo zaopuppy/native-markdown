@@ -39,14 +39,29 @@ impl Resources {
         let root = document
             .and_then(Path::parent)
             .and_then(|p| p.canonicalize().ok());
-        let mut options = Options::ENABLE_TABLES
-            | Options::ENABLE_FOOTNOTES
-            | Options::ENABLE_STRIKETHROUGH
-            | Options::ENABLE_TASKLISTS
-            | Options::ENABLE_GFM;
+        let mut options = crate::markdown::parser_options();
         options.insert(Options::ENABLE_MATH);
         let mut depth = 0usize;
-        let events = Parser::new_ext(source, options)
+        let events = Parser::new_ext(source, options).into_offset_iter()
+            .flat_map(|(event, range)| {
+                let top = depth == 0 && !matches!(event, Event::End(_));
+                let heading = top && matches!(event, Event::Start(Tag::Heading { .. }));
+                match &event {
+                    Event::Start(_) => depth += 1,
+                    Event::End(_) => depth = depth.saturating_sub(1),
+                    _ => {}
+                }
+                let mut events = Vec::with_capacity(4);
+                if heading {
+                    events.push(Event::Html("</section><section class=\"reading-section\">".into()));
+                }
+                if top { events.push(Event::Html(format!("<div class=\"source-block\" data-source-start=\"{}\" data-source-end=\"{}\">", range.start, range.end).into())); }
+                events.push(event);
+                if depth == 0 {
+                    events.push(Event::Html("</div>".into()));
+                }
+                events
+            })
             .map(|event| match event {
                 Event::Start(Tag::Link {
                     link_type,
@@ -110,28 +125,13 @@ impl Resources {
                 // Safe HTML tables and inline formatting pass through the sanitizer below. Raw HTML
                 // images do not acquire filesystem access: only generated /image tokens are served.
                 event => event,
-            })
-            .flat_map(|event| {
-                let boundary = depth == 0 && matches!(event, Event::Start(Tag::Heading { .. }));
-                match &event {
-                    Event::Start(_) => depth += 1,
-                    Event::End(_) => depth = depth.saturating_sub(1),
-                    _ => {}
-                }
-                let mut events = Vec::with_capacity(2);
-                if boundary {
-                    events.push(Event::Html(
-                        "</section><section class=\"reading-section\">".into(),
-                    ));
-                }
-                events.push(event);
-                events
             });
         let mut output = String::from("<section class=\"reading-section\">");
         html::push_html(&mut output, events);
         output.push_str("</section>");
         self.html = ammonia::Builder::default()
             .add_tags(&["section"])
+            .add_tag_attributes("div", &["data-source-start", "data-source-end"])
             .add_tag_attributes("td", &["colspan", "rowspan"])
             .add_tag_attributes("th", &["colspan", "rowspan"])
             .add_generic_attributes(&["class"])
@@ -312,6 +312,23 @@ pub fn respond(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn html_blocks_match_editor_utf8_source_ranges() {
+        let source = "# 中文\n\nparagraph $x$\n\n- outer\n  - nested\n\n> quote\n\n---\n\n```mermaid\nflowchart LR\nA-->B\n```\n\n$$x^2$$\n\n<table><tr><td>safe</td></tr></table>\n";
+        let blocks = crate::markdown::source_blocks(source);
+        let html = Resources::default().render(source, None);
+        assert_eq!(html.matches("class=\"source-block\"").count(), blocks.len());
+        for block in blocks {
+            assert!(source.is_char_boundary(block.start) && source.is_char_boundary(block.end));
+            assert!(html.contains(&format!(
+                "data-source-start=\"{}\" data-source-end=\"{}\"",
+                block.start, block.end
+            )));
+        }
+        assert!(html.contains("<table><tbody><tr><td>safe</td></tr></tbody></table>"));
+        assert!(html.contains("<ul>\n<li>outer\n<ul>"));
+    }
+
     #[test]
     fn untrusted_source_cannot_create_executable_markup_or_ipc() {
         let mut resources = Resources::default();

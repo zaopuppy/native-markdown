@@ -216,6 +216,8 @@ pub struct NativeMarkdownApp {
     active_search_offset: Option<usize>,
     search_request: u64,
     source_search: SourceSearch,
+    scroll_sync: crate::scroll_sync::ScrollSync,
+    sync_scroll_enabled: bool,
     app_focus: FocusHandle,
     view_mode: ViewMode,
     file_tree: FileTree,
@@ -394,6 +396,12 @@ impl NativeMarkdownApp {
             && !self.native_popup_open
             && !self.settings_open;
         let (source, offset) = self.preview_source();
+        let sync_enabled = visible && self.view_mode == ViewMode::Split && self.sync_scroll_enabled;
+        self.scroll_sync.configure(
+            sync_enabled,
+            self.preview_markdown.clone(),
+            offset..offset + source.len(),
+        );
         if self.web_preview.is_none() && !self.web_starting && visible {
             use futures::StreamExt as _;
             self.web_starting = true;
@@ -446,6 +454,7 @@ impl NativeMarkdownApp {
                 "zoom":self.zoom.factor(), "heading":heading, "navigation":self.outline_jump_request,
                 "query":if self.search_open { self.search_query.as_str() } else { "" }, "occurrence":self.active_hit.saturating_sub(preceding), "searchRequest":self.search_request,
                 "theme":self.appearance.reader_settings(),
+                "sync":{"enabled":sync_enabled,"revision":self.scroll_sync.revision(),"base":offset},
                 "searchOpen":self.search_open,
                 "nativeSearchFocus":self.search_open && self.search_input.read(cx).focus_handle(cx).is_focused(window),
             }));
@@ -458,6 +467,38 @@ impl NativeMarkdownApp {
             return;
         };
         match value["kind"].as_str() {
+            Some("scroll-position")
+                if self.view_mode == ViewMode::Split
+                    && self.sync_scroll_enabled
+                    && !self.settings_open =>
+            {
+                if let (Some(start), Some(fraction), Some(edge), Some(revision)) = (
+                    value["start"]
+                        .as_u64()
+                        .and_then(|value| usize::try_from(value).ok()),
+                    value["fraction"].as_f64(),
+                    value["edge"]
+                        .as_i64()
+                        .and_then(|value| i8::try_from(value).ok()),
+                    value["revision"].as_u64(),
+                ) {
+                    if self.scroll_sync.receive(
+                        crate::scroll_sync::Position {
+                            start,
+                            fraction: fraction as f32,
+                            edge,
+                        },
+                        revision,
+                    ) {
+                        cx.notify();
+                    }
+                }
+            }
+            Some("document-readable") => {
+                self.scroll_sync.realign();
+                cx.notify();
+            }
+
             Some("zoom-wheel") => {
                 if let Some(delta) = value["delta"].as_f64().filter(|delta| delta.is_finite()) {
                     if self
@@ -517,6 +558,7 @@ impl NativeMarkdownApp {
             Some("ready") => {
                 if let Some(view) = &self.web_preview {
                     view.borrow_mut().on_ready();
+                    self.scroll_sync.realign();
                 }
                 // Wry's synchronous initialization pumps native messages. Retry any initial tree
                 // scan whose completion arrived while GPUI was constructing the child HWND.
@@ -757,6 +799,8 @@ impl NativeMarkdownApp {
             active_search_offset: None,
             search_request: 0,
             source_search: SourceSearch::default(),
+            scroll_sync: crate::scroll_sync::ScrollSync::default(),
+            sync_scroll_enabled: true,
             app_focus: cx.focus_handle(),
             view_mode: ViewMode::Preview,
             file_tree: FileTree::new(tree_root),
@@ -1823,6 +1867,13 @@ impl NativeMarkdownApp {
                     )),
             )
             .child(modes)
+            .when(cfg!(windows) && self.view_mode == ViewMode::Split, |view| view.child(
+                self.state_button(tool_button("sync-scroll", "Sync scrolling", r#"<path d="M4 7h14l-3-3m5 13H6l3 3M18 7l-3 3M6 17l3-3"/>"#), self.sync_scroll_enabled)
+                    .debug_selector(|| "sync-scroll-toggle".into())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.sync_scroll_enabled = !this.sync_scroll_enabled;
+                        cx.notify();
+                    }))))
             .child(div().w(px(1.0)).h(px(16.0)).mx_2().bg(rgb(self.palette().border)))
             .child(
                 tool_button(
@@ -2489,6 +2540,24 @@ impl NativeMarkdownApp {
                     .appearance(false),
             )
             .child(self.source_search.observer(self.editor.clone()))
+            .map(|panel| {
+                #[cfg(windows)]
+                if let Some(preview) = self
+                    .web_preview
+                    .clone()
+                    .filter(|_| self.view_mode == ViewMode::Split && self.sync_scroll_enabled)
+                {
+                    return panel.child(
+                        self.scroll_sync.observer(
+                            self.editor.clone(),
+                            move |position, revision| {
+                                preview.borrow().scroll_to(position, revision)
+                            },
+                        ),
+                    );
+                }
+                panel
+            })
     }
 
     fn welcome(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
