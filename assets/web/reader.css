@@ -18,7 +18,12 @@ code { font-family: Consolas, monospace; font-size: .88em; } :not(pre)>code { ba
 table { border-collapse: collapse; width: 100%; margin: 1em 0; } td,th { border: 1px solid var(--border); padding: 8px 12px; min-width: 60px; } th { background: var(--panel); }
 img { max-width: 100%; height: auto; } .math-display { overflow-x: auto; padding: 12px; }
 main img {cursor:zoom-in;} dialog.image-viewer {width:92vw;height:90vh;max-width:none;max-height:none;padding:0;border:1px solid var(--border);background:var(--canvas);color:var(--text);}
-dialog.image-viewer::backdrop {background:#111b;} .image-viewer .diagram-stage {height:calc(100% - 45px);max-height:none;}
+dialog.image-viewer::backdrop {background:#111b;}
+dialog.image-viewer[open] {display:flex;flex-direction:column;}
+.image-viewer > .diagram-tools {flex:none;}
+.image-viewer > .diagram-stage {flex:1;min-height:0;max-height:none;}
+.image-viewer .diagram-stage.pan svg, .image-viewer .diagram-stage.pan svg * {user-select:none;}
+.image-viewer .viewer-zoom {margin-left:auto;font-variant-numeric:tabular-nums;}
 .diagram { margin: 20px 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; content-visibility: auto; contain-intrinsic-size: auto 400px; }
 .diagram-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 10px; background: var(--panel); font: 12px/1.5 "Segoe UI",sans-serif; }
 button { font: inherit; color: inherit; border: 1px solid transparent; border-radius: 5px; background: transparent; padding: 3px 8px; cursor: pointer; }

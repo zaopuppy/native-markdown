@@ -39,7 +39,7 @@ When the file tree is focused, use `Up` / `Down` to move, `Left` / `Right` to co
 
 ## Mermaid and reading interaction
 
-Offline Mermaid.js renders inline SVG with selectable labels, independent zoom, Fit and optional drag-to-pan. Normal text selection works with Pan disabled. A broken diagram shows its error without blocking the document. The reading surface, code blocks and diagrams use narrow rounded scrollbars without arrow buttons.
+Offline Mermaid.js renders inline SVG with selectable labels, independent zoom, Fit and optional drag-to-pan. Normal text selection works with Pan disabled. Use **Expand** to inspect a diagram in the same reading-area overlay as images, with Move / Select text modes, zoom, Fit and 100%. Close or press Esc to return to the unchanged inline zoom, Pan mode and scroll position. A broken diagram shows its error without blocking the document. The reading surface, code blocks and diagrams use narrow rounded scrollbars without arrow buttons.
 
 Untrusted Markdown HTML is sanitized. Scripts, runtime diagram configuration, external diagram resources and arbitrary Rust IPC are blocked. Each document allows up to 64 diagrams, each with at most 256 KiB of source and 1,500 edges. Mermaid frontmatter is currently rejected, including title-only frontmatter.
 

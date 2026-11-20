@@ -8,7 +8,7 @@ let highlightObserver;
 let diagramQueue = Promise.resolve();
 let state = {zoom:1, heading:null, navigation:0, query:'', occurrence:0, searchRequest:0};
 let appliedNavigation = -1, appliedSearch = -1, reloadTicket = 0, loading = false;
-let imageDialog;
+let viewerDialog;
 const notify = (kind, detail = {}) => window.ipc?.postMessage(JSON.stringify({kind, ...detail}));
 function loadScript(name) {
   if (!scripts.has(name)) scripts.set(name, new Promise((resolve, reject) => {
@@ -56,6 +56,8 @@ async function renderDiagram(box, code, index, currentRevision) {
     button('Fit', () => { scale = Math.min(1, Math.max(0.05, (stage.clientWidth-32)/width)); zoom(1); stage.scrollTo(0,0); }, tools);
     const pan = button('Pan', () => { stage.classList.toggle('pan'); pan.setAttribute('aria-pressed', String(stage.classList.contains('pan'))); }, tools);
     pan.setAttribute('aria-pressed', 'false');
+    const expand = button('Expand', () => showDiagram(drawing, stage, width, height, expand), tools);
+    expand.title = '展开查看';
     tools.append(label, document.createTextNode('Select text normally · enable Pan to drag · Ctrl+wheel to zoom'));
     let drag;
     stage.addEventListener('pointerdown', event => {
@@ -76,7 +78,7 @@ async function renderDiagram(box, code, index, currentRevision) {
   }
 }
 window.readerSetDocument = async function(html, reset = false) {
-  imageDialog?.close(); imageDialog?.remove(); imageDialog=undefined;
+  dismissViewer();
   const current = ++revision, began = performance.now(), scroll = scrollY;
   observer?.disconnect();
   highlightObserver?.disconnect();
@@ -146,6 +148,7 @@ function applyState() {
 }
 window.readerConfigure = next => {
   const themeChanged = next.theme && state.theme?.id !== next.theme.id;
+  if (themeChanged) dismissViewer();
   state=next;
   if (next.theme) {
     const element = document.documentElement;
@@ -170,30 +173,97 @@ root.addEventListener('click', event => {
   else if(href?.startsWith('/link/')) notify('document-link',{id:href});
   else if(href && /^https?:|^mailto:/i.test(href)) notify('link',{url:href});
 });
+function dismissViewer() {
+  viewerDialog?.readerClose();
+}
+function showDiagram(drawing, sourceStage, width, height, opener) {
+  dismissViewer();
+  // Move the original SVG, avoiding duplicate IDs, another Mermaid render, or
+  // rasterization. A same-size placeholder keeps inline layout and scroll range.
+  const originalStyle = drawing.getAttribute('style');
+  const left = sourceStage.scrollLeft, top = sourceStage.scrollTop;
+  const placeholder = document.createElement('div');
+  const bounds = drawing.getBoundingClientRect();
+  placeholder.style.width = `${bounds.width}px`; placeholder.style.height = `${bounds.height}px`;
+  drawing.replaceWith(placeholder);
+  showViewer(drawing, width, height, {
+    diagram:true, opener,
+    restore:() => {
+      if (originalStyle === null) drawing.removeAttribute('style');
+      else drawing.setAttribute('style', originalStyle);
+      if (placeholder.isConnected) {
+        placeholder.replaceWith(drawing);
+        sourceStage.scrollLeft=left; sourceStage.scrollTop=top;
+      }
+    }
+  });
+}
 function showImage(image) {
-  imageDialog?.remove();
-  const dialog=document.createElement('dialog');imageDialog=dialog;dialog.className='image-viewer';
-  const tools=document.createElement('div');tools.className='diagram-tools';
-  const stage=document.createElement('div');stage.className='diagram-stage pan';
-  const picture=image.cloneNode();picture.draggable=false;picture.loading='eager';picture.style.maxWidth='none';stage.append(picture);
-  let scale=1;
-  const zoom=factor=>{scale=Math.max(.05,Math.min(8,scale*factor));picture.style.width=`${image.naturalWidth*scale}px`;picture.style.height=`${image.naturalHeight*scale}px`;};
-  button('−',()=>zoom(1/1.25),tools);button('+',()=>zoom(1.25),tools);
-  button('Fit',()=>{scale=Math.min(1,(stage.clientWidth-32)/image.naturalWidth,(stage.clientHeight-32)/image.naturalHeight);zoom(1);stage.scrollTo(0,0);},tools);
-  button('100%',()=>{scale=1;zoom(1);},tools);button('Close',()=>dialog.close(),tools);
-  let drag;
-  stage.addEventListener('pointerdown',e=>{if(e.button!==0)return;drag={x:e.clientX,y:e.clientY,left:stage.scrollLeft,top:stage.scrollTop};stage.setPointerCapture(e.pointerId);e.preventDefault();});
+  dismissViewer();
+  const picture=image.cloneNode(); picture.draggable=false; picture.loading='eager'; picture.style.maxWidth='none';
+  showViewer(picture,image.naturalWidth,image.naturalHeight,{opener:image});
+}
+function showViewer(content, width, height, {diagram=false, opener, restore=()=>{}}={}) {
+  const dialog=document.createElement('dialog'); viewerDialog=dialog; dialog.className='image-viewer';
+  dialog.setAttribute('aria-label',diagram?'Mermaid diagram viewer':'Image viewer');
+  const documentScroll={x:scrollX,y:scrollY};
+  const tools=document.createElement('div'); tools.className='diagram-tools';
+  const stage=document.createElement('div'); stage.className='diagram-stage pan'; stage.append(content);
+  let scale=1, drag, closed=false;
+  const label=document.createElement('span'); label.className='viewer-zoom'; label.setAttribute('aria-live','polite');
+  const zoom=factor=>{
+    scale=Math.max(.05,Math.min(8,scale*factor));
+    content.style.width=`${width*scale}px`; content.style.height=`${height*scale}px`;
+    label.textContent=`${Math.round(scale*100)}%`;
+  };
+  const fit=()=>{scale=Math.min(1,Math.max(.05,Math.min((stage.clientWidth-32)/width,(stage.clientHeight-32)/height)));zoom(1);stage.scrollTo(0,0);};
+  button('−',()=>zoom(1/1.25),tools); button('+',()=>zoom(1.25),tools);
+  button('Fit',fit,tools); button('100%',()=>{scale=1;zoom(1);},tools);
+  if (diagram) {
+    const setMode=pan=>{
+      drag=undefined;
+      stage.classList.toggle('pan',pan);
+      move.setAttribute('aria-pressed',String(pan)); select.setAttribute('aria-pressed',String(!pan));
+      if(pan) getSelection().removeAllRanges();
+    };
+    const move=button('Move',()=>setMode(true),tools); move.title='移动图表';
+    const select=button('Select text',()=>setMode(false),tools); select.title='选择文字';
+    setMode(true);
+  }
+  const close=()=>{
+    if(closed) return;
+    closed=true;
+    if(dialog.open) dialog.close();
+    restore(); dialog.remove();
+    if(viewerDialog===dialog) viewerDialog=undefined;
+    opener?.focus({preventScroll:true}); scrollTo(documentScroll.x,documentScroll.y);
+  };
+  dialog.readerClose=close;
+  button('Close',close,tools); tools.append(label);
+  stage.addEventListener('pointerdown',e=>{
+    if(e.button!==0 || !stage.classList.contains('pan')) return;
+    drag={x:e.clientX,y:e.clientY,left:stage.scrollLeft,top:stage.scrollTop};
+    stage.setPointerCapture(e.pointerId); e.preventDefault();
+  });
   stage.addEventListener('pointermove',e=>{if(drag){stage.scrollLeft=drag.left-e.clientX+drag.x;stage.scrollTop=drag.top-e.clientY+drag.y;}});
-  stage.addEventListener('pointerup',()=>drag=undefined);stage.addEventListener('pointercancel',()=>drag=undefined);
+  stage.addEventListener('pointerup',()=>drag=undefined); stage.addEventListener('pointercancel',()=>drag=undefined);
   stage.addEventListener('wheel',e=>{if(e.ctrlKey){e.preventDefault();e.stopPropagation();zoom(Math.exp(-e.deltaY*.002));}},{passive:false});
-  dialog.append(tools,stage);document.body.append(dialog);dialog.showModal();zoom(1);
-  dialog.addEventListener('close',()=>{dialog.remove();if(imageDialog===dialog)imageDialog=undefined;});
+  dialog.addEventListener('keydown',e=>{
+    if(!e.ctrlKey || e.altKey || e.metaKey) return;
+    if(!['+','=','-','0'].includes(e.key)) return;
+    e.preventDefault(); e.stopPropagation();
+    if(e.key==='0') {scale=1;zoom(1);} else zoom(e.key==='-'?1/1.25:1.25);
+  });
+  dialog.append(tools,stage); document.body.append(dialog);
+  dialog.addEventListener('cancel',e=>{e.preventDefault();close();});
+  dialog.addEventListener('close',close);
+  dialog.showModal(); if(diagram) fit(); else zoom(1);
 }
 document.addEventListener('keydown', event => {
-  if(event.key==='Enter' && state.searchOpen && !imageDialog && !event.ctrlKey && !event.altKey && !event.metaKey) {
+  if(event.key==='Enter' && state.searchOpen && !viewerDialog && !event.ctrlKey && !event.altKey && !event.metaKey) {
     event.preventDefault(); notify('search-step',{backward:event.shiftKey}); return;
   }
-  if(event.key==='Escape' && !imageDialog) {notify('escape');return;}
+  if(event.key==='Escape' && !viewerDialog) {notify('escape');return;}
   if(!event.ctrlKey || event.altKey) return;
   const key=event.key.toLowerCase();
   if(['o','s','f','e','n','1','2','3','+','=','-','0'].includes(key)) {event.preventDefault(); notify('shortcut',{key,shift:event.shiftKey});}

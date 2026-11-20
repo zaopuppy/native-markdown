@@ -131,6 +131,54 @@ Text after broken Mermaid.
             # Test actual Ctrl+C on a DOM text selection; inspect OS clipboard in PowerShell afterwards.
             page.keyboard.press('Control+c')
             page.screenshot(path=str(repo/'tmp/web-preview-acceptance.png'))
+            # Expand the actual SVG without losing the inline zoom, pan or scroll state.
+            for _ in range(3): first.get_by_role('button',name='+',exact=True).click()
+            first.get_by_role('button',name='Pan',exact=True).click()
+            stage.evaluate('(e)=>{e.scrollLeft=80;e.scrollTop=10;}')
+            inline_state = first.evaluate("""e=>{const s=e.querySelector('.diagram-stage'),svg=s.querySelector('svg');
+                window.inlineDiagram=svg;
+                return {style:svg.getAttribute('style'),left:s.scrollLeft,top:s.scrollTop,
+                    pan:s.classList.contains('pan'),scroll:scrollY};}""")
+            for cycle in range(3):
+                first.get_by_role('button',name='Expand',exact=True).click()
+                viewer=page.get_by_role('dialog',name='Mermaid diagram viewer')
+                viewer.wait_for(state='visible')
+                assert viewer.locator('svg').evaluate('(e)=>e===window.inlineDiagram')
+                assert first.locator('svg').count() == 0, 'Keep a single SVG with unique IDs'
+                assert viewer.get_by_role('button',name='Move',exact=True).get_attribute('aria-pressed') == 'true'
+                view_stage=viewer.locator('.diagram-stage')
+                assert view_stage.evaluate('(e)=>e.clientHeight') > stage.evaluate('(e)=>e.clientHeight')
+                for _ in range(6): viewer.get_by_role('button',name='+',exact=True).click()
+                box=view_stage.bounding_box()
+                page.mouse.move(box['x']+box['width']*.7,box['y']+80)
+                page.mouse.down();page.mouse.move(box['x']+30,box['y']+80,steps=8);page.mouse.up()
+                assert view_stage.evaluate('(e)=>e.scrollLeft') > 0
+                viewer.get_by_role('button',name='Fit',exact=True).click()
+                viewer.get_by_role('button',name='Select text',exact=True).click()
+                viewer.locator('svg text').filter(has_text='开始').first.dblclick()
+                assert page.evaluate('getSelection().toString()').strip() == '开始'
+                assert viewer.get_by_role('button',name='Select text',exact=True).get_attribute('aria-pressed') == 'true'
+                viewer.get_by_role('button',name='100%',exact=True).click()
+                assert viewer.locator('.viewer-zoom').inner_text() == '100%'
+                before=viewer.locator('svg').evaluate('(e)=>e.getBoundingClientRect().width')
+                page.keyboard.press('Control++')
+                assert viewer.locator('svg').evaluate('(e)=>e.getBoundingClientRect().width') > before
+                page.keyboard.press('Control+0')
+                assert viewer.locator('.viewer-zoom').inner_text() == '100%'
+                page.keyboard.down('Control')
+                page.mouse.move(box['x']+50,box['y']+50);page.mouse.wheel(0,-120)
+                page.keyboard.up('Control')
+                page.wait_for_function("document.querySelector('.viewer-zoom').textContent !== '100%'")
+                if cycle == 0: page.screenshot(path=str(repo/'tmp/web-preview-mermaid-expanded.png'))
+                if cycle % 2: viewer.get_by_role('button',name='Close',exact=True).click()
+                else: page.keyboard.press('Escape')
+                assert page.locator('dialog[open]').count() == 0
+                restored=first.evaluate("""e=>{const s=e.querySelector('.diagram-stage'),svg=s.querySelector('svg');
+                    return {style:svg.getAttribute('style'),left:s.scrollLeft,top:s.scrollTop,
+                        pan:s.classList.contains('pan'),scroll:scrollY};}""")
+                assert restored == inline_state, (restored,inline_state)
+            first.get_by_role('button',name='Pan',exact=True).click()
+            first.get_by_role('button',name='Fit',exact=True).click()
             # Search lifecycle: next/previous occurrence and clearing both CSS marks and selection.
             page.evaluate("""() => {
                 const base={zoom:1,heading:null,navigation:0,query:'Text',occurrence:0,
@@ -158,15 +206,27 @@ Text after broken Mermaid.
                 ('nord','#2e3440','#e5e9f0',True),
                 ('paper','#fafbf8','#292e2b',False),
             ]:
+                first.get_by_role('button',name='Expand',exact=True).click()
+                assert page.locator('dialog[open]').count() == 1
                 page.evaluate("""({id,canvas,text,dark})=>readerConfigure({zoom:1,heading:null,navigation:0,
                     query:'',occurrence:0,searchRequest:104,theme:{id,dark,colors:{canvas,text}}})""",
                     dict(id=theme_id,canvas=canvas,text=text,dark=dark))
+                assert page.locator('dialog[open]').count() == 0, 'Theme changes must release the active viewer'
                 assert page.evaluate('document.documentElement.dataset.theme') == theme_id
                 first.scroll_into_view_if_needed()
                 page.wait_for_selector('.diagram svg text')
                 assert first.locator('svg text').count() > 0
                 assert page.locator('pre code.hljs').first.evaluate('(e)=>getComputedStyle(e).backgroundColor') == 'rgba(0, 0, 0, 0)'
             page.screenshot(path=str(repo/'tmp/web-preview-themes.png'))
+            first.get_by_role('button',name='Expand',exact=True).click()
+            page.evaluate('readerReload(false)')
+            page.wait_for_selector('dialog[open]',state='detached')
+            first.scroll_into_view_if_needed()
+            page.wait_for_selector('.diagram svg text')
+            first.get_by_role('button',name='Expand',exact=True).click()
+            page.keyboard.press('Escape')
+            assert first.locator('svg').count() == 1
+
             if not args.poc:
                 # Drive the real shortcut bridge: saving preserves the original Markdown byte-for-byte.
                 before=fixture.stat().st_mtime_ns
@@ -181,7 +241,7 @@ Text after broken Mermaid.
                 page.wait_for_function('(width) => innerWidth < width * .8', arg=width)
                 page.keyboard.press('Control+1')
                 page.wait_for_function('(width) => innerWidth > width * .9', arg=width)
-            print(json.dumps({'result':'pass', 'svgSelection':selected, 'inlineSVG':True, 'zoom':True, 'dragPan':True, 'localImage':True, 'math':True, 'codeHighlight':True, 'failureIsolation':True, 'sanitization':True, 'darkTheme':True}, ensure_ascii=False))
+            print(json.dumps({'result':'pass', 'svgSelection':selected, 'expandedViewer':True, 'inlineStatePreserved':True, 'inlineSVG':True, 'zoom':True, 'dragPan':True, 'localImage':True, 'math':True, 'codeHighlight':True, 'failureIsolation':True, 'sanitization':True, 'darkTheme':True}, ensure_ascii=False))
             browser.close()
     except Exception:
         log.flush()
