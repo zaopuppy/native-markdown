@@ -399,13 +399,14 @@ impl NativeMarkdownApp {
             let app = cx.entity().downgrade();
             let initial_source = source.clone();
             let initial_path = self.document.path.clone();
+            let initial_appearance = self.appearance;
             window.spawn(cx,async move |cx| {
                 // WebView2 construction pumps native messages. Both the entity borrow AND the
                 // outer GPUI AppCell borrow must be released before entering its message loop.
                 cx.background_executor().timer(Duration::from_millis(1)).await;
                 let Ok(parent)=cx.update(|window,_|crate::web_preview::PreviewParent::capture(window)) else {return;};
                 // Deliberately outside cx.update: timers and cursor tasks may now borrow GPUI.
-                let result=parent.and_then(|parent|crate::web_preview::WebPreview::new(&parent,initial_source,initial_path.as_deref(),sender));
+                let result=parent.and_then(|parent|crate::web_preview::WebPreview::new(&parent,initial_source,initial_path.as_deref(),initial_appearance,sender));
                 let installed=cx.update(|_window,cx|app.update(cx,|app,cx| {
                     app.web_starting=false;
                     if app.document.is_empty() {return false;}

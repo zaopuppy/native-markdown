@@ -1,4 +1,5 @@
 //! Windows-only child WebView. The native app owns files, editing, dialogs and commands.
+use crate::appearance::Appearance;
 use crate::web_document::{self, Resources, ORIGIN};
 use futures::channel::mpsc::UnboundedSender;
 use gpui::{canvas, prelude::*, Bounds, Pixels, SharedString, Window};
@@ -11,6 +12,11 @@ use std::{
 };
 use wry::raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 use wry::{WebViewBuilder, WebViewBuilderExtWindows};
+
+fn background_color(appearance: Appearance) -> wry::RGBA {
+    let canvas = appearance.palette().canvas;
+    ((canvas >> 16) as u8, (canvas >> 8) as u8, canvas as u8, 255)
+}
 
 /// A native parent handle detached from GPUI's AppCell/Window borrows.
 /// Only used synchronously on the UI thread while the application owns the parent window.
@@ -55,9 +61,10 @@ impl WebPreview {
         parent: &PreviewParent,
         source: SharedString,
         document: Option<&Path>,
+        appearance: Appearance,
         sender: UnboundedSender<PreviewEvent>,
     ) -> anyhow::Result<Self> {
-        let resources = Arc::new(RwLock::new(Resources::default()));
+        let resources = Arc::new(RwLock::new(Resources::new(appearance)));
         resources.write().unwrap().render(&source, document);
         let protocol = resources.clone();
         let profile = std::env::var_os("NATIVE_MARKDOWN_WEB_PROFILE")
@@ -74,6 +81,7 @@ impl WebPreview {
         let mut builder = WebViewBuilder::new_with_web_context(&mut context)
             .with_bounds(wry::Rect::default())
             .with_visible(false)
+            .with_background_color(background_color(appearance))
             .with_browser_accelerator_keys(false)
             .with_custom_protocol("reader".into(), move |_, request| {
                 web_document::respond(&protocol, request.uri().path())
@@ -140,6 +148,14 @@ impl WebPreview {
         scope: usize,
         settings: serde_json::Value,
     ) {
+        if let Some(id) = settings["theme"]["id"].as_str() {
+            let appearance = Appearance::parse(id);
+            let mut resources = self.resources.write().unwrap();
+            if resources.appearance != appearance {
+                resources.appearance = appearance;
+                let _ = self.view.set_background_color(background_color(appearance));
+            }
+        }
         let changed_document = self.document.as_deref() != document;
         let changed_scope = self.scope != scope;
         if self.source != source || changed_document || changed_scope {

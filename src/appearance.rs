@@ -145,14 +145,42 @@ impl Appearance {
     }
 
     #[cfg(windows)]
-    pub fn reader_settings(self) -> serde_json::Value {
+    fn reader_colors(self) -> [(&'static str, u32); 10] {
         let p = self.palette();
-        serde_json::json!({"id":self.id(), "dark":self.is_dark(), "colors": {
-            "canvas":format!("#{:06x}",p.canvas), "surface":format!("#{:06x}",p.surface),
-            "panel":format!("#{:06x}",p.panel), "text":format!("#{:06x}",p.text),
-            "muted":format!("#{:06x}",p.muted), "border":format!("#{:06x}",p.border),
-            "selection":format!("#{:06x}",p.selection), "accent":format!("#{:06x}",p.accent),
-            "link":format!("#{:06x}",p.link), "danger":format!("#{:06x}",p.danger)
-        }})
+        [
+            ("canvas", p.canvas),
+            ("surface", p.surface),
+            ("panel", p.panel),
+            ("text", p.text),
+            ("muted", p.muted),
+            ("border", p.border),
+            ("selection", p.selection),
+            ("accent", p.accent),
+            ("link", p.link),
+            ("danger", p.danger),
+        ]
+    }
+
+    // Trusted app-owned colors are embedded in the HTML before any CSS or JS
+    // loads, so the browser never paints a light default while awaiting IPC.
+    #[cfg(windows)]
+    pub fn reader_root_attributes(self) -> String {
+        let variables: String = self
+            .reader_colors()
+            .into_iter()
+            .map(|(name, color)| format!("--{name}:#{color:06x};"))
+            .collect();
+        format!("data-theme=\"{}\" data-dark=\"{}\" style=\"color-scheme:{};background:var(--canvas);color:var(--text);{}\"",
+            self.id(), self.is_dark(), if self.is_dark() { "dark" } else { "light" }, variables)
+    }
+
+    #[cfg(windows)]
+    pub fn reader_settings(self) -> serde_json::Value {
+        let colors: serde_json::Map<String, serde_json::Value> = self
+            .reader_colors()
+            .into_iter()
+            .map(|(name, color)| (name.to_owned(), serde_json::json!(format!("#{color:06x}"))))
+            .collect();
+        serde_json::json!({"id":self.id(), "dark":self.is_dark(), "colors":colors})
     }
 }

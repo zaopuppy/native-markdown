@@ -1,4 +1,5 @@
 //! Safe, offline HTML projection. It never mutates the Markdown source or exposes a filesystem URL.
+use crate::appearance::Appearance;
 use pulldown_cmark::{html, Event, Options, Parser, Tag};
 use std::{
     borrow::Cow,
@@ -16,6 +17,7 @@ const MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Default)]
 pub struct Resources {
+    pub appearance: Appearance,
     generation: u64,
     images: HashMap<String, (PathBuf, PathBuf)>,
     links: HashMap<String, PathBuf>,
@@ -23,6 +25,13 @@ pub struct Resources {
 }
 
 impl Resources {
+    pub fn new(appearance: Appearance) -> Self {
+        Self {
+            appearance,
+            ..Self::default()
+        }
+    }
+
     pub fn render(&mut self, source: &str, document: Option<&Path>) -> String {
         self.generation = self.generation.wrapping_add(1);
         self.images.clear();
@@ -222,14 +231,21 @@ pub fn respond(
     path: &str,
 ) -> wry::http::Response<Cow<'static, [u8]>> {
     let (mime, body): (&str, Option<Cow<'static, [u8]>>) = match path {
-        "/" => (
-            "text/html; charset=utf-8",
-            Some(Cow::Owned(
-                include_str!("../assets/web/index.html")
-                    .replace("<!--DOCUMENT-->", &resources.read().unwrap().html)
-                    .into_bytes(),
-            )),
-        ),
+        "/" => {
+            let state = resources.read().unwrap();
+            (
+                "text/html; charset=utf-8",
+                Some(Cow::Owned(
+                    include_str!("../assets/web/index.html")
+                        .replace(
+                            "<!--APPEARANCE-->",
+                            &state.appearance.reader_root_attributes(),
+                        )
+                        .replace("<!--DOCUMENT-->", &state.html)
+                        .into_bytes(),
+                )),
+            )
+        }
         "/document" => (
             "text/plain; charset=utf-8",
             Some(Cow::Owned(

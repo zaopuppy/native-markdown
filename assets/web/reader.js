@@ -6,7 +6,8 @@ let revision = 0;
 let observer;
 let highlightObserver;
 let diagramQueue = Promise.resolve();
-let state = {zoom:1, heading:null, navigation:0, query:'', occurrence:0, searchRequest:0};
+let state = {zoom:1, heading:null, navigation:0, query:'', occurrence:0, searchRequest:0,
+  theme:{id:document.documentElement.dataset.theme,dark:document.documentElement.dataset.dark==='true'}};
 let appliedNavigation = -1, appliedSearch = -1, reloadTicket = 0, loading = false;
 let viewerDialog;
 const notify = (kind, detail = {}) => window.ipc?.postMessage(JSON.stringify({kind, ...detail}));
