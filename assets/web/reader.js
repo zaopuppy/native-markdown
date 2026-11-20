@@ -248,6 +248,11 @@ function showViewer(content, width, height, {diagram=false, opener, restore=()=>
   stage.addEventListener('pointermove',e=>{if(drag){stage.scrollLeft=drag.left-e.clientX+drag.x;stage.scrollTop=drag.top-e.clientY+drag.y;}});
   stage.addEventListener('pointerup',()=>drag=undefined); stage.addEventListener('pointercancel',()=>drag=undefined);
   stage.addEventListener('wheel',e=>{if(e.ctrlKey){e.preventDefault();e.stopPropagation();zoom(Math.exp(-e.deltaY*.002));}},{passive:false});
+  // Native dialog modality does not isolate scrolling. The content area uses
+  // overscroll containment; toolbar/backdrop wheels must not reach the article.
+  dialog.addEventListener('wheel',e=>{
+    if(!stage.contains(e.target) || e.ctrlKey) {e.preventDefault();e.stopPropagation();}
+  },{passive:false});
   dialog.addEventListener('keydown',e=>{
     if(!e.ctrlKey || e.altKey || e.metaKey) return;
     if(!['+','=','-','0'].includes(e.key)) return;

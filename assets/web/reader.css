@@ -21,7 +21,7 @@ main img {cursor:zoom-in;} dialog.image-viewer {width:92vw;height:90vh;max-width
 dialog.image-viewer::backdrop {background:#111b;}
 dialog.image-viewer[open] {display:flex;flex-direction:column;}
 .image-viewer > .diagram-tools {flex:none;}
-.image-viewer > .diagram-stage {flex:1;min-height:0;max-height:none;}
+.image-viewer > .diagram-stage {flex:1;min-height:0;max-height:none;overscroll-behavior:contain;}
 .image-viewer .diagram-stage.pan svg, .image-viewer .diagram-stage.pan svg * {user-select:none;}
 .image-viewer .viewer-zoom {margin-left:auto;font-variant-numeric:tabular-nums;}
 .diagram { margin: 20px 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; content-visibility: auto; contain-intrinsic-size: auto 400px; }

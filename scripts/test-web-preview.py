@@ -15,6 +15,25 @@ import time
 import urllib.request
 from playwright.sync_api import sync_playwright
 
+
+def assert_viewer_wheel_contained(page, viewer):
+    # Test real wheel defaults, including toolbar and the dialog backdrop.
+    frame=viewer.bounding_box()
+    for target in [viewer.locator('.diagram-stage'), viewer.locator('.diagram-tools')]:
+        box=target.bounding_box()
+        page.mouse.move(box['x']+box['width']/2,box['y']+box['height']/2)
+        for delta in [-420,420]:
+            before=page.evaluate('({x:scrollX,y:scrollY})')
+            page.mouse.wheel(0,delta)
+            page.wait_for_timeout(150)
+            assert page.evaluate('({x:scrollX,y:scrollY})') == before, 'Viewer leaked wheel scrolling to the article'
+    page.mouse.move(frame['x']/2,frame['y']+frame['height']/2)
+    for delta in [-420,420]:
+        before=page.evaluate('({x:scrollX,y:scrollY})')
+        page.mouse.wheel(0,delta)
+        page.wait_for_timeout(150)
+        assert page.evaluate('({x:scrollX,y:scrollY})') == before, 'Viewer backdrop leaked wheel scrolling to the article'
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--binary', required=True)
 parser.add_argument('--poc', action='store_true')
@@ -69,7 +88,7 @@ Text after broken Mermaid.
 ''', encoding='utf-8')
     (Path(directory)/'local.svg').write_text('<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="120" height="60" fill="teal"/></svg>', encoding='utf-8')
     original = fixture.read_bytes()
-    env = dict(os.environ, NATIVE_MARKDOWN_WEB_PROFILE=str(Path(directory)/'profile'), NATIVE_MARKDOWN_WEB_TEST_ARGS=f'--remote-debugging-port={port}')
+    env = dict(os.environ, APPDATA=str(Path(directory)/'appdata'), NATIVE_MARKDOWN_WEB_PROFILE=str(Path(directory)/'profile'), NATIVE_MARKDOWN_WEB_TEST_ARGS=f'--remote-debugging-port={port}')
     log_path = repo/f'tmp/web-preview-test-{time.time_ns()}.log'
     log = open(log_path, 'w', encoding='utf-8')
     process = subprocess.Popen([str(Path(args.binary).resolve()), str(fixture)], env=env, stdout=log, stderr=log)
@@ -109,6 +128,7 @@ Text after broken Mermaid.
             assert page.evaluate('getSelection().toString()') == 'English selectable text'
             page.locator('img[src^="/image/"]').click()
             page.wait_for_selector('dialog[open]')
+            assert_viewer_wheel_contained(page,page.get_by_role('dialog',name='Image viewer'))
             page.get_by_role('button',name='Close',exact=True).click()
             assert page.locator('dialog[open]').count() == 0
             first = page.locator('.diagram').first
@@ -148,7 +168,22 @@ Text after broken Mermaid.
                 assert viewer.get_by_role('button',name='Move',exact=True).get_attribute('aria-pressed') == 'true'
                 view_stage=viewer.locator('.diagram-stage')
                 assert view_stage.evaluate('(e)=>e.clientHeight') > stage.evaluate('(e)=>e.clientHeight')
-                for _ in range(6): viewer.get_by_role('button',name='+',exact=True).click()
+                # No scroll range must not make the fitted diagram scroll its background.
+                assert_viewer_wheel_contained(page,viewer)
+                for _ in range(10): viewer.get_by_role('button',name='+',exact=True).click()
+                # Overflow must still scroll normally, then stop at both boundaries.
+                view_stage.evaluate('(e)=>{e.scrollTop=0;e.scrollLeft=0;}')
+                box=view_stage.bounding_box()
+                page.mouse.move(box['x']+50,box['y']+50)
+                before_scroll=page.evaluate('scrollY')
+                page.mouse.wheel(0,150)
+                page.wait_for_function("() => document.querySelector('dialog .diagram-stage').scrollTop > 0")
+                assert page.evaluate('scrollY') == before_scroll
+                for edge,delta in [('top',-420),('bottom',420)]:
+                    view_stage.evaluate('(e,edge)=>e.scrollTop=edge==="top"?0:e.scrollHeight',edge)
+                    page.mouse.wheel(0,delta);page.wait_for_timeout(150)
+                    assert page.evaluate('scrollY') == before_scroll, 'Scroll boundary leaked to the article'
+                view_stage.evaluate('(e)=>{e.scrollTop=0;e.scrollLeft=0;}')
                 box=view_stage.bounding_box()
                 page.mouse.move(box['x']+box['width']*.7,box['y']+80)
                 page.mouse.down();page.mouse.move(box['x']+30,box['y']+80,steps=8);page.mouse.up()
