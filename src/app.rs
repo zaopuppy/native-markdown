@@ -2318,7 +2318,10 @@ impl NativeMarkdownApp {
                     .border_color(rgb(self.palette().border))
                     .child(
                         self.state_button(
-                            Button::new("outline-jump-mode").label("Jump").small(),
+                            Button::new("outline-jump-mode")
+                                .label("Jump")
+                                .small()
+                                .debug_selector(|| "outline-jump-button".into()),
                             self.outline_mode == OutlineMode::Jump,
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -2333,7 +2336,10 @@ impl NativeMarkdownApp {
                     )
                     .child(
                         self.state_button(
-                            Button::new("outline-focus-mode").label("Focus").small(),
+                            Button::new("outline-focus-mode")
+                                .label("Focus")
+                                .small()
+                                .debug_selector(|| "outline-focus-button".into()),
                             self.outline_mode == OutlineMode::Focus,
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -2369,7 +2375,6 @@ impl NativeMarkdownApp {
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.focused_section = None;
                             this.selected_heading = None;
-                            this.view_mode = ViewMode::Preview;
                             cx.notify();
                         })),
                     ),
@@ -2411,7 +2416,6 @@ impl NativeMarkdownApp {
                             }
                             OutlineMode::Focus => this.focused_section = section_index,
                         }
-                        this.view_mode = ViewMode::Preview;
                         cx.notify();
                     })),
             );
@@ -3445,6 +3449,56 @@ mod tests {
                 assert_eq!(app.view_mode, ViewMode::Preview);
             });
         });
+    }
+
+    #[gpui::test]
+    fn outline_navigation_preserves_preview_split_and_source_modes(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("outline-modes.md");
+        let source = "# First\n\nFirst body.\n\n## Child\n\nChild body.\n\n# Last\n\nLast body.";
+        std::fs::write(&path, source).unwrap();
+        let mut app = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| NativeMarkdownApp::new(Some(path), window, cx));
+            app = Some(view.clone());
+            gpui_component::Root::new(view, window, cx)
+        });
+        let app = app.unwrap();
+        cx.simulate_resize(size(px(1180.0), px(780.0)));
+        for mode in [ViewMode::Split, ViewMode::Source, ViewMode::Preview] {
+            app.update(cx, |app, cx| app.set_view_mode(mode, cx));
+            for (selector, heading, focused) in [
+                ("outline-jump-button", None, None),
+                ("outline-heading-label-0", Some(0), None),
+                ("outline-focus-button", Some(0), Some(0)),
+                ("outline-heading-label-1", Some(1), Some(1)),
+                ("outline-full-document-label", None, None),
+            ] {
+                draw_app(cx);
+                let position = cx.debug_bounds(selector).unwrap().center();
+                cx.simulate_mouse_down(position, gpui::MouseButton::Left, Modifiers::default());
+                cx.simulate_mouse_up(position, gpui::MouseButton::Left, Modifiers::default());
+                draw_app(cx);
+                app.read_with(cx, |app, _| {
+                    assert_eq!(
+                        app.view_mode, mode,
+                        "{selector} must preserve the current view"
+                    );
+                    assert_eq!(app.selected_heading, heading);
+                    assert_eq!(app.focused_section, focused);
+                    assert_eq!(app.document.content, source);
+                    assert_eq!(
+                        app.preview_source().0.as_ref(),
+                        match focused {
+                            Some(0) => "# First\n\nFirst body.\n\n## Child\n\nChild body.\n\n",
+                            Some(1) => "## Child\n\nChild body.\n\n",
+                            _ => source,
+                        }
+                    );
+                });
+            }
+        }
     }
 
     #[gpui::test]
