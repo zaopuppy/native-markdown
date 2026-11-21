@@ -2085,6 +2085,20 @@ impl NativeMarkdownApp {
                             }),
                     )
                     .child(
+                        Button::new("tree-open-in-explorer")
+                            .icon(tool_icon(r#"<path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v3M3 7v12a2 2 0 0 0 2 2h8m3-6h6v6m0-6-8 8"/>"#))
+                            .accessibility_label("打开当前文件夹")
+                            .small()
+                            .ghost()
+                            .disabled(root.is_none())
+                            .tooltip("打开当前文件夹（文件资源管理器）")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(root) = this.file_tree.root() {
+                                    cx.open_with_system(root);
+                                }
+                            })),
+                    )
+                    .child(
                         Button::new("close-file-tree")
                             .icon(tool_icon(r#"<path d="m6 6 12 12M6 18 18 6"/>"#))
                             .accessibility_label("Close File Tree")
