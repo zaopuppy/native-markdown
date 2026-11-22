@@ -110,6 +110,8 @@ Recent history lives at `%APPDATA%/NativeMarkdown/recent.json`, with a 64 KiB re
 
 Theme and sidebar layout are stored in `%APPDATA%/NativeMarkdown/layout.conf`. Reading-width choices and the scroll-sync toggle stay in memory for the current run. Unsaved-edit recovery uses `%TEMP%/native-markdown-recovery.md`.
 
+Normal Save skips disk access when the text matches its in-memory open/last-save baseline, including edits that were undone. Save As still writes the selected target. `Saved` appears for one second only after a successful document write; opening an unchanged document does not show it.
+
 The reading area is a WebView2 child window inside the native GPUI shell. If initialization fails, the app shows an error; source editing and saving remain available. There is no native preview fallback. Linux and macOS do not yet have a supported reading backend.
 
 Mermaid currently rejects frontmatter, including title-only frontmatter. Limits are 64 diagrams per document, 256 KiB of source per diagram, and 1,500 edges per diagram. Very complex diagrams can still stall the reading surface temporarily.

@@ -23,7 +23,7 @@ use rfd::AsyncFileDialog;
 
 use crate::appearance::{Appearance, Palette};
 use crate::benchmark::BenchmarkScenario;
-use crate::document::Document;
+use crate::document::{Document, SaveOutcome};
 use crate::file_tree::{self, EntryKind, FileTree, VisibleRow};
 use crate::layout_settings::LayoutSettings;
 use crate::markdown::{self, Heading, SearchHit};
@@ -1456,18 +1456,19 @@ impl NativeMarkdownApp {
             self.save_as(None, window, cx);
             return;
         }
-        self.save_existing();
+        self.save_existing(cx);
         cx.notify();
     }
 
-    fn save_existing(&mut self) -> bool {
+    fn save_existing(&mut self, cx: &mut Context<Self>) -> bool {
         match self.document.save() {
-            Ok(()) => {
+            Ok(SaveOutcome::Written) => {
                 self.last_path.clone_from(&self.document.path);
 
-                self.set_notice("Saved", false);
+                self.show_saved_notice(cx);
                 true
             }
+            Ok(SaveOutcome::Unchanged) => true,
             Err(error) => {
                 self.set_notice(format!("Could not save document: {error}"), true);
                 false
@@ -1477,7 +1478,7 @@ impl NativeMarkdownApp {
 
     fn save_before(&mut self, action: DocumentAction, window: &mut Window, cx: &mut Context<Self>) {
         if self.document.path.is_some() {
-            if self.save_existing() {
+            if self.save_existing(cx) {
                 self.perform_document_action(action, window, cx);
             } else {
                 cx.notify();
@@ -1532,7 +1533,7 @@ impl NativeMarkdownApp {
                                 if should_reset_tree {
                                     app.reset_tree_to_document(window, cx);
                                 }
-                                app.set_notice("Saved", false);
+                                app.show_saved_notice(cx);
                                 app.remember_current_file();
                                 if let Some(action) = continuation {
                                     app.perform_document_action(action, window, cx);
@@ -1567,6 +1568,26 @@ impl NativeMarkdownApp {
             is_error,
             created_at: Instant::now(),
         });
+    }
+
+    fn show_saved_notice(&mut self, cx: &mut Context<Self>) {
+        self.set_notice("Saved", false);
+        let created_at = self.notice.as_ref().unwrap().created_at;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_secs(1)).await;
+            let _ = this.update(cx, |this, cx| {
+                // A later save or error owns its own lifetime.
+                if this
+                    .notice
+                    .as_ref()
+                    .is_some_and(|notice| notice.created_at == created_at)
+                {
+                    this.notice = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     fn show_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2946,7 +2967,7 @@ impl NativeMarkdownApp {
                 if self.document.is_dirty() {
                     "Unsaved changes · recovery on".to_owned()
                 } else {
-                    "Saved".to_owned()
+                    String::new()
                 }
             },
             |notice| notice.text.clone(),
@@ -3925,6 +3946,52 @@ mod tests {
         assert_eq!(ViewMode::Preview.label(), "Preview");
         assert_eq!(ViewMode::Split.label(), "Split");
         assert_eq!(ViewMode::Source.label(), "Source");
+    }
+
+    #[gpui::test]
+    fn saved_notice_expires_without_clearing_a_later_error(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("saved.md");
+        std::fs::write(&path, "# Original").unwrap();
+        let (app, cx) =
+            cx.add_window_view(|window, cx| NativeMarkdownApp::new(Some(path.clone()), window, cx));
+        app.update(cx, |app, cx| {
+            assert!(app.notice.is_none(), "opening must not announce a save");
+            app.document.content = "# Changed".into();
+            assert!(app.save_existing(cx));
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "# Changed");
+            assert_eq!(app.notice.as_ref().unwrap().text, "Saved");
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(900));
+        cx.run_until_parked();
+        app.read_with(cx, |app, _| assert!(app.notice.is_some()));
+        cx.executor().advance_clock(Duration::from_millis(200));
+        cx.run_until_parked();
+        app.read_with(cx, |app, _| assert!(app.notice.is_none()));
+
+        app.update(cx, |app, cx| {
+            assert!(app.save_existing(cx));
+            assert!(
+                app.notice.is_none(),
+                "unchanged save must not announce a write"
+            );
+            app.document.content = "# Changed again".into();
+            assert!(app.save_existing(cx));
+            app.set_notice("Could not save document", true);
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(1_100));
+        cx.run_until_parked();
+        app.read_with(cx, |app, _| {
+            let notice = app
+                .notice
+                .as_ref()
+                .expect("save timer must preserve the error");
+            assert!(notice.is_error);
+            assert_eq!(notice.text, "Could not save document");
+        });
     }
 
     #[gpui::test]

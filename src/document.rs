@@ -8,6 +8,12 @@ use tempfile::NamedTempFile;
 const RECOVERY_FILE: &str = "native-markdown-recovery.md";
 const RECOVERY_DEBOUNCE: Duration = Duration::from_millis(900);
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum SaveOutcome {
+    Written,
+    Unchanged,
+}
+
 pub struct Document {
     pub content: String,
     pub path: Option<PathBuf>,
@@ -78,12 +84,17 @@ impl Document {
             .to_owned()
     }
 
-    pub fn save(&mut self) -> io::Result<()> {
+    pub fn save(&mut self) -> io::Result<SaveOutcome> {
         let path = self
             .path
             .clone()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "document has no file path"))?;
-        self.write_to(path)
+        // Compare with the in-memory open/save baseline; do not read or stat the file.
+        if !self.is_dirty() {
+            return Ok(SaveOutcome::Unchanged);
+        }
+        self.write_to(path)?;
+        Ok(SaveOutcome::Written)
     }
 
     pub fn save_as(&mut self, path: PathBuf) -> io::Result<()> {
@@ -152,6 +163,29 @@ mod tests {
         assert!(!document.is_dirty());
         document.content.push_str("hello");
         assert!(document.is_dirty());
+    }
+
+    #[test]
+    fn unchanged_save_preserves_external_content_and_save_as_still_writes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("original.md");
+        let copy = directory.path().join("copy.md");
+        fs::write(&path, "# Original").unwrap();
+        let mut document = Document::open(path.clone()).unwrap();
+        // An untouched editor must not overwrite a file changed by another program.
+        fs::write(&path, "# External change").unwrap();
+        assert_eq!(document.save().unwrap(), SaveOutcome::Unchanged);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "# External change");
+        document.content.push_str(" edited");
+        document.content = "# Original".into(); // Edit followed by undo is also unchanged.
+        assert_eq!(document.save().unwrap(), SaveOutcome::Unchanged);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "# External change");
+        document.save_as(copy.clone()).unwrap();
+        assert_eq!(fs::read_to_string(&copy).unwrap(), "# Original");
+        document.content = "# Modified".into();
+        assert_eq!(document.save().unwrap(), SaveOutcome::Written);
+        assert_eq!(fs::read_to_string(&copy).unwrap(), "# Modified");
+        assert_eq!(document.save().unwrap(), SaveOutcome::Unchanged);
     }
 
     #[test]

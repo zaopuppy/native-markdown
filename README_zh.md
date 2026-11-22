@@ -110,6 +110,8 @@ cargo build --release --locked
 
 主题与侧栏布局保存在 `%APPDATA%/NativeMarkdown/layout.conf`。阅读宽度和分栏滚动同步开关只在本次运行内保留。未保存修改的恢复文件位于 `%TEMP%/native-markdown-recovery.md`。
 
+普通保存会在内存中比较当前正文与打开或上次保存时的内容；内容未变（包括修改后撤销）时跳过磁盘访问。另存为仍写入所选目标。只有正文实际写入成功才显示 `Saved`，1 秒后消失；打开未修改的文档不会显示该提示。
+
 阅读区是嵌入 GPUI 原生窗口的 WebView2 子窗口。初始化失败时会明确报错，仍可编辑源码和保存；没有原生预览兜底。Linux、macOS 暂无受支持的阅读后端。
 
 Mermaid 暂不支持 frontmatter，包括仅含 title 的 frontmatter。每篇文档最多 64 张图，每图源码最多 256 KiB、最多 1,500 条边；特别复杂的图仍可能暂时阻塞阅读区域。
