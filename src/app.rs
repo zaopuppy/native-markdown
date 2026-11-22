@@ -237,6 +237,9 @@ pub struct NativeMarkdownApp {
     preview_markdown: SharedString,
     focused_section: Option<usize>,
     selected_heading: Option<usize>,
+    // None means no observation yet; Some(None) is the introduction before any heading.
+    reading_heading: Option<Option<usize>>,
+    outline_revision: u64,
     outline_mode: OutlineMode,
     outline_jump_request: u64,
     zoom: ZoomLevel,
@@ -449,7 +452,7 @@ impl NativeMarkdownApp {
             self.web_preview.take();
             return;
         }
-        let (_, _, overlay_tree, overlay_outline) =
+        let (_, regular_outline, overlay_tree, overlay_outline) =
             self.responsive_panel_visibility(window.viewport_size().width.into());
         let visible = self.view_mode != ViewMode::Source
             && !self.dialog_in_flight
@@ -512,16 +515,70 @@ impl NativeMarkdownApp {
                 .iter()
                 .take_while(|hit| hit.source_offset.is_some_and(|position| position < offset))
                 .count();
+            let source_end = offset + source.len();
             view.update(source, self.document.path.as_deref(), offset, serde_json::json!({
                 "zoom":self.zoom.factor(), "heading":heading, "navigation":self.outline_jump_request,
                 "query":if self.search_open { self.search_query.as_str() } else { "" }, "occurrence":self.active_hit.saturating_sub(preceding), "searchRequest":self.search_request,
                 "theme":self.appearance.reader_settings(),
                 "readingWidth":self.reading_width,"widthFollowsZoom":self.reading_width_follows_zoom,
+                "outline":{"enabled":visible && regular_outline && !self.outline.is_empty(),
+                    "revision":self.outline_revision,"base":offset,"end":source_end},
                 "sync":{"enabled":sync_enabled,"revision":self.scroll_sync.revision(),"base":offset},
                 "searchOpen":self.search_open,
                 "nativeSearchFocus":self.search_open && self.search_input.read(cx).focus_handle(cx).is_focused(window),
             }));
         }
+    }
+
+    fn active_outline_heading(&self) -> Option<usize> {
+        if self.view_mode == ViewMode::Source {
+            self.selected_heading
+        } else {
+            self.reading_heading.unwrap_or(self.selected_heading)
+        }
+    }
+
+    #[cfg(windows)]
+    fn apply_outline_position(
+        &mut self,
+        heading: Option<usize>,
+        base: usize,
+        end: usize,
+        revision: u64,
+    ) -> bool {
+        if revision != self.outline_revision {
+            return false;
+        }
+        let range = self
+            .focused_section
+            .and_then(|section| {
+                markdown::focus_range(&self.document.content, &self.outline, section)
+            })
+            .unwrap_or(0..self.document.content.len());
+        if base != range.start || end != range.end {
+            return false;
+        }
+        let heading = match heading {
+            Some(local_index) => {
+                let first = self
+                    .outline
+                    .partition_point(|heading| heading.offset < base);
+                let Some(index) = first.checked_add(local_index).filter(|index| {
+                    self.outline
+                        .get(*index)
+                        .is_some_and(|heading| heading.offset < end)
+                }) else {
+                    return false;
+                };
+                Some(index)
+            }
+            None => None,
+        };
+        if self.reading_heading == Some(heading) {
+            return false;
+        }
+        self.reading_heading = Some(heading);
+        true
     }
 
     #[cfg(windows)]
@@ -530,6 +587,36 @@ impl NativeMarkdownApp {
             return;
         };
         match value["kind"].as_str() {
+            Some("outline-position")
+                if self.view_mode != ViewMode::Source
+                    && self
+                        .responsive_panel_visibility(window.viewport_size().width.into())
+                        .1
+                    && !self.settings_open
+                    && !self.dialog_in_flight
+                    && !self.native_popup_open =>
+            {
+                let parse_offset = |name| {
+                    value[name]
+                        .as_u64()
+                        .and_then(|value| usize::try_from(value).ok())
+                };
+                let heading = if value["heading"].is_null() {
+                    Some(None)
+                } else {
+                    parse_offset("heading").map(Some)
+                };
+                if let (Some(heading), Some(base), Some(end), Some(revision)) = (
+                    heading,
+                    parse_offset("base"),
+                    parse_offset("end"),
+                    value["revision"].as_u64(),
+                ) {
+                    if self.apply_outline_position(heading, base, end, revision) {
+                        cx.notify();
+                    }
+                }
+            }
             Some("scroll-position")
                 if self.view_mode == ViewMode::Split
                     && self.sync_scroll_enabled
@@ -883,6 +970,8 @@ impl NativeMarkdownApp {
             preview_markdown,
             focused_section: None,
             selected_heading: None,
+            reading_heading: None,
+            outline_revision: 0,
             outline_mode: OutlineMode::Jump,
             outline_jump_request: 0,
             zoom: ZoomLevel::default(),
@@ -910,6 +999,8 @@ impl NativeMarkdownApp {
     }
 
     fn refresh_analysis(&mut self) {
+        self.reading_heading = None;
+        self.outline_revision = self.outline_revision.wrapping_add(1);
         self.active_search_offset = None;
         self.active_hit = 0;
 
@@ -2035,9 +2126,7 @@ impl NativeMarkdownApp {
             )
     }
 
-    fn file_tree_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        use std::hash::{Hash as _, Hasher as _};
-
+    fn file_tree_header(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let root = self.file_tree.root().map(Path::to_path_buf);
         let root_title = root
             .as_deref()
@@ -2056,10 +2145,6 @@ impl NativeMarkdownApp {
             !file_tree::is_markdown_path(active)
                 || root.as_deref().is_none_or(|root| !active.starts_with(root))
         });
-        let mut root_hasher = std::collections::hash_map::DefaultHasher::new();
-        root.hash(&mut root_hasher);
-        let root_id = root_hasher.finish();
-
         let header = div()
             .v_flex()
             .flex_none()
@@ -2188,6 +2273,11 @@ impl NativeMarkdownApp {
                 )
             });
 
+        header.into_any_element()
+    }
+
+    fn file_tree_body(&mut self, root_id: u64, cx: &mut Context<Self>) -> AnyElement {
+        let has_root = self.file_tree.root().is_some();
         let mut body = div()
             .id(("file-tree-scroll", root_id))
             .v_flex()
@@ -2196,7 +2286,7 @@ impl NativeMarkdownApp {
             .overflow_y_scrollbar()
             .py_2();
 
-        if root.is_none() {
+        if !has_root {
             body = body.child(
                 div()
                     .v_flex()
@@ -2397,6 +2487,18 @@ impl NativeMarkdownApp {
             }
         }
 
+        body.into_any_element()
+    }
+
+    // Keep independent builders in separate stack frames: unoptimized GPUI chains
+    // otherwise accumulate nearly a megabyte of temporaries in this function.
+    fn file_tree_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut root_hasher = std::collections::hash_map::DefaultHasher::new();
+        self.file_tree.root().hash(&mut root_hasher);
+        let root_id = root_hasher.finish();
+        let header = self.file_tree_header(cx);
+        let body = self.file_tree_body(root_id, cx);
         div()
             .debug_selector(|| "file-tree-panel".into())
             .key_context(FILE_TREE_CONTEXT)
@@ -2422,6 +2524,7 @@ impl NativeMarkdownApp {
     }
 
     fn outline_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let active_heading = self.active_outline_heading();
         let sections = markdown::sections(&self.document.content, &self.outline);
         let mut panel = div()
             .debug_selector(|| "outline-panel".into())
@@ -2500,7 +2603,7 @@ impl NativeMarkdownApp {
                                 .small()
                                 .w_full()
                                 .justify_start(),
-                            self.focused_section.is_none() && self.selected_heading.is_none(),
+                            self.focused_section.is_none() && active_heading.is_none(),
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.focused_section = None;
@@ -2535,9 +2638,10 @@ impl NativeMarkdownApp {
                     .justify_start()
                     .pl(px(outline_indent(heading.level)))
                     .pr_2()
-                    .selected(self.selected_heading == Some(heading_index))
+                    .selected(active_heading == Some(heading_index))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.selected_heading = Some(heading_index);
+                        this.reading_heading = None;
                         match this.outline_mode {
                             OutlineMode::Jump => {
                                 this.focused_section = None;
@@ -3049,6 +3153,57 @@ mod tests {
         cx.run_until_parked();
         cx.update(|window, cx| {
             let _ = window.draw(cx);
+        });
+    }
+
+    #[gpui::test]
+    #[cfg(windows)]
+    fn scroll_outline_highlight_never_changes_navigation_or_focus(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (app, cx) = cx.add_window_view(|window, cx| NativeMarkdownApp::new(None, window, cx));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.document.content =
+                    "Intro\n\n# Parent\nText\n\n## Child\nChild text\n\n# Last\nEnd".into();
+                app.refresh_analysis();
+                let revision = app.outline_revision;
+                let end = app.document.content.len();
+                let navigation = app.outline_jump_request;
+                let selection = app.editor.read(cx).selected_range();
+                assert!(app.apply_outline_position(Some(1), 0, end, revision));
+                assert_eq!(app.active_outline_heading(), Some(1));
+                assert_eq!(
+                    app.selected_heading, None,
+                    "scroll must not change the clicked heading"
+                );
+                assert_eq!(app.outline_jump_request, navigation);
+                assert_eq!(app.focused_section, None);
+                assert_eq!(app.editor.read(cx).selected_range(), selection);
+                assert!(
+                    !app.apply_outline_position(Some(1), 0, end, revision),
+                    "same chapter must not request another redraw"
+                );
+                assert!(!app.apply_outline_position(Some(99), 0, end, revision));
+                assert!(!app.apply_outline_position(Some(0), 0, end, revision.wrapping_sub(1)));
+                assert!(app.apply_outline_position(None, 0, end, revision));
+                assert_eq!(app.active_outline_heading(), None);
+
+                // A focused subtree reports local indexes; old/full-document messages are stale.
+                app.outline_mode = OutlineMode::Focus;
+                app.focused_section = Some(1); // Parent follows the introduction section.
+                let (scope, base) = app.preview_source();
+                assert!(base > 0);
+                assert!(!app.apply_outline_position(Some(0), 0, end, revision));
+                assert!(app.apply_outline_position(Some(1), base, base + scope.len(), revision));
+                assert_eq!(app.active_outline_heading(), Some(1));
+                assert_eq!(app.focused_section, Some(1));
+                assert_eq!(app.outline_jump_request, navigation);
+                assert_eq!(app.editor.read(cx).selected_range(), selection);
+                app.refresh_analysis();
+                assert_eq!(app.reading_heading, None);
+                assert!(!app.apply_outline_position(Some(0), base, base + scope.len(), revision));
+                let _ = window;
+            })
         });
     }
 

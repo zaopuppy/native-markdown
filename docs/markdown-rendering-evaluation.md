@@ -251,6 +251,33 @@ python scripts/summarize-rendering.py tmp\webview.json
 
 复现使用前文命令，当前可直接运行 `target/release/native-markdown.exe`。每次升级固定官方版本和锁文件；不要重新引入 vendor 或编辑 registry 源码。更详细的 API 迁移对应关系见 [组件升级说明](gpui-component-fork.md)。
 
+## 阅读滚动时的目录高亮（2026-11-22）
+
+阅读及分栏的预览滚动会高亮当前标题，判定线位于视口顶部下方最多 96px。跟随状态与点击目录的跳转/Focus 状态分开，不移动文档、源码选区或焦点。纯源码模式沿用点击目录的选择状态。目录隐藏、页面隐藏或查看器打开时不采样；静止时不轮询。此功能只维护内存，不增加运行时磁盘读写。
+
+滚动事件通过一个尾随定时器合并，最多每 100ms 检测一次，停下后仍处理末次位置。DOM 更新时索引章节与标题；检测时先二分章节容器，再二分当前章节的标题，避免逐个读取远处标题而破坏 `content-visibility`。只有标题索引变化才向 Rust 发消息并更新目录，旧文档版本和 Focus 范围的迟到消息被忽略。
+
+实际 Release / WebView2 测量：同一构建中交替开关跟随，每组 3 次、每次约 1.58 秒，rAF 每帧滚动 45px，夹具为 61 / 1601 个标题。以下为中位数，CPU 为整个宿主与 WebView2 后代的累计 CPU 毫秒，不是整机 CPU 百分比；帧间隔来自 WebView rAF，不代表原生目录的呈现延迟。
+
+| 场景 | 关闭→开启 CPU ms | 关闭→开启 p95 帧间隔 ms | 开启时消息数 | 开启时几何读取累计 ms |
+|---|---:|---:|---:|---:|
+| 61 标题 | 312.5→562.5 | 17.0→17.0 | 8 | 0.4 |
+| 1601 标题 | 593.8→765.6 | 16.9→16.9 | 9 | 0.3 |
+| 61 标题，renderer 4 倍降速 | 2281.3→1765.6 | 16.9→16.9 | 8 | 1.3 |
+| 1601 标题，renderer 4 倍降速 | 2187.5→2421.9 | 16.9→16.9 | 8 | 1.2 |
+
+本机短测未观察到 WebView 滚动帧间隔恶化，但原生目录更新存在 CPU 成本，且 CPU 数据有明显噪声（降速小夹具甚至出现开启更低），不能宣称零开销。4 倍降速只模拟 renderer，未降低 Rust/GPU 速度，不能代替真实低端机验证。没有新增内存或磁盘 I/O 的实测结论。
+
+复现：`uv run --with playwright --with psutil python scripts/test-outline-follow.py`，附加 `--cpu-rate 4` 进行 renderer 降速。夹具、配置及 WebView profile 均隔离在临时目录，开发报告写至 `tmp/outline-follow-*-cpu-*.json`。自动化覆盖上下滚动、嵌套标题、引言、静止不轮询、禁用后无几何读取/消息、消息节流以及不触发导航；Rust 回归覆盖重复更新、过期版本、局部标题到全局目录的映射、选区/Focus 不变。
+
+## Windows Debug 启动栈溢出修复（2026-11-22）
+
+全新临时配置下，`target/debug/native-markdown.exe` 空启动可稳定复现 `STATUS_STACK_OVERFLOW (0xc00000fd)`。通过 Windows Debug API / DbgHelp 捕获现场，栈顶是 `__chkstk → NativeMarkdownApp::file_tree_panel → workspace → render`，没有重复递归链；`file_tree_panel` 入口申请 `0xde9b0` 字节（约 890 KiB），而可执行文件的主线程栈保留仅 1 MiB。空页尚未创建 WebView，不能把此崩溃归因于滚动跟随或 IPC。
+
+修复将文件树头部、列表体和外层容器分成独立构建函数，避免未优化构建在同一个栈帧中保留大量链式 UI 构建临时值；没有扩大栈保留，也没有新增运行时配置或日志。`test-delayed-web-preview.py` 同时隔离 APPDATA、TEMP 和 WebView profile，并作为真实 Debug 启动回归运行；GPUI 单元测试和 Release 构建不能代替这项验证。修复后 Debug 启动/延迟打开 3/3 次通过，Release 1/1 次通过；Debug 下 61 / 1601 标题的目录跟随实测通过，68 项 Rust 测试、fmt、clippy 通过。
+
+前述目录跟随性能数据采自本次构建函数拆分之前的 Release，未作为拆分后的性能测量。
+
 ## 一手依据
 
 - [Wry 子窗口与平台说明](https://docs.rs/wry/0.57.3/wry/struct.WebViewBuilder.html)

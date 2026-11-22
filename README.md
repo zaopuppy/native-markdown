@@ -18,7 +18,7 @@ Built with **Rust + GPUI**, with **system WebView2** for the reading surface. No
 
 ### Open a README. Stay for the whole project.
 
-Start in reading mode, with the document taking center stage. Browse nearby Markdown files in the folder tree, jump between headings, or use **Focus** to read just one section. Resize the sidebars or hide them when you want more room.
+Start in reading mode, with the document taking center stage. Browse nearby Markdown files in the folder tree, jump between headings, or use **Focus** to read just one section. The outline highlights your current heading as you scroll the reading pane. Resize the sidebars or hide them when you want more room.
 
 Open a file with `Ctrl+O`, drop it into the window, or pass its path on the command line. Recent files and folders are a click away in the File menu.
 
@@ -131,9 +131,12 @@ See the [rendering evaluation](docs/markdown-rendering-evaluation.md) for archit
 cargo fmt --check
 cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
+cargo build
+python scripts/test-delayed-web-preview.py --binary target/debug/native-markdown.exe --runs 3
 node --check assets/web/reader.js
 uv run --with playwright python scripts/test-web-preview.py --binary target/release/native-markdown.exe
 uv run --with playwright python scripts/test-scroll-sync.py --binary target/release/native-markdown.exe
+uv run --with playwright --with psutil python scripts/test-outline-follow.py --binary target/release/native-markdown.exe
 python scripts/test-delayed-web-preview.py --binary target/release/native-markdown.exe --runs 3
 ```
 
