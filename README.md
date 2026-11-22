@@ -1,72 +1,145 @@
+[简体中文](README_zh.md) · English
+
 # Native Markdown
 
-A quiet, reader-first Markdown desktop app built with Rust and GPUI Component. Windows uses one system WebView2 control for the reading area; the window, file tree, source editor and file lifecycle remain native Rust. No Electron, bundled Chromium, Node runtime or frontend build is required.
+**Give your Markdown room to breathe.**
 
-## Features
+A reader-first Markdown app for Windows. Open a project README, follow a technical guide, or explore a Mermaid diagram—with clear typography, a document outline, and the source one shortcut away.
 
-- **Reader-first preview**: Preview is the default, with optional split and source-only modes
-- **Preview and source modes**: Switch between preview, split, and source-only layouts
-- **Split scroll sync (Windows)**: Scroll either pane to follow the same Markdown block in the other, including soft-wrapped source. The Split toolbar toggle enables independent scrolling. Mapping and toggle state stay in memory; scrolling adds no file reads, writes or persistent cache. Focus synchronizes within the displayed section; source scrolling outside it leaves the preview in place.
-- **Browser-quality reading**: Selectable text, tables (including safe HTML spans), code highlighting, KaTeX math, local images, links and document zoom
-- **Offline Mermaid diagrams**: Mermaid.js creates inline SVG with zoom, Fit, optional drag-to-pan and selectable labels. Diagrams render when near the viewport; individual failures show their source
-- **Folder tree**: Lazy, read-only Markdown browsing rooted at the document folder, with parent and folder-root navigation
-- **Document outline**: Resizable right sidebar, default Jump navigation and optional section Focus
-- **Find**: Search rendered text and jump between matching sections
-- **Safe file lifecycle**: Atomic saves, Save As, dirty-state warnings, visible errors, and background recovery
-- **Desktop integration**: Native dialogs, drag-and-drop, and command-line paths
-- **Recent files and folders (Windows)**: The File menu reopens up to 20 files and 20 explicitly opened folder roots, newest first. History loads once at startup from `%APPDATA%/NativeMarkdown/recent.json` (64 KiB limit). A successfully opened path absent from its current list triggers one atomic snapshot write; reopening a listed path only updates the in-memory order. There are no timer or exit writes, and listing history does not probe recorded paths. Implicit folder navigation when opening a document does not create a second history write. Write failures keep the in-memory history and show an error.
-- **Local-image safety**: Relative images are restricted to the active document directory; remote images are disabled by default
-- **Reading metadata**: Word count and estimated reading time
-- **Appearance settings**: Open the toolbar gear to choose Paper, Sepia, Sage, Midnight or Nord. The app, source editor, reading surface and Mermaid diagrams share the selected theme; the choice is saved across restarts.
-- **Reading width**: Settings offers 720, 980, 1280 px or full width. By default the width limit expands with zoom above 100%, up to the available reading area; turn this off for a fixed limit. Width options currently stay in memory for this run and add no configuration writes.
+Built with **Rust + GPUI**, with **system WebView2** for the reading surface. No Electron or bundled Chromium.
 
-## Shortcuts
+[Get started](#get-started) · [Explore the features](#made-for-the-way-you-read) · [Keyboard shortcuts](#keyboard-shortcuts) · [Report an issue](https://github.com/zaopuppy/native-markdown/issues)
+
+![Native Markdown in Paper: a local file tree, formatted document, interactive Mermaid diagram, and heading outline](docs/screenshots/reader.png)
+
+*Your files on the left. The document in the middle. Its structure on the right.*
+
+## Made for the way you read
+
+### Open a README. Stay for the whole project.
+
+Start in reading mode, with the document taking center stage. Browse nearby Markdown files in the folder tree, jump between headings, or use **Focus** to read just one section. Resize the sidebars or hide them when you want more room.
+
+Open a file with `Ctrl+O`, drop it into the window, or pass its path on the command line. Recent files and folders are a click away in the File menu.
+
+### Diagrams you can actually explore
+
+Mermaid diagrams render locally as SVG. Zoom into the details, fit the whole flow, or expand the diagram for a closer look. Switch between moving the diagram and selecting its labels—copying text stays useful even inside a chart.
+
+![Detail of the expanded Mermaid viewer, with zoom, Fit, Move, and Select text controls](docs/screenshots/diagram-detail.png)
+
+*Diagram viewer detail. Rendering assets are bundled, so Mermaid works offline.*
+
+An invalid diagram shows its error and source while the rest of the document remains readable. Diagrams near the viewport render first.
+
+### Read the result. Keep the source close.
+
+Press `Ctrl+2` for source and preview side by side. Both panes follow the same Markdown block as you scroll, including wrapped source lines. Turn off **Sync scrolling** whenever you want to compare different passages.
+
+![Midnight theme detail: Markdown source beside highlighted Rust code, typeset math, and a task list](docs/screenshots/split-detail.png)
+
+*A crop of the real split view in Midnight. Code, math, and checklists keep their context.*
+
+Use `Ctrl+1` to return to reading or `Ctrl+3` to work in source only. Save the Markdown itself with `Ctrl+S`; atomic saves, unsaved-change prompts, and background recovery help protect your edits.
+
+### Settle into your own reading space
+
+Choose **Paper, Sepia, Sage, Midnight, or Nord**. The window, editor, reading surface, and diagrams share the theme, and your choice carries over to the next launch.
+
+Pick a reading width of **720, 980, 1280 px, or full width**. Zoom the document without enlarging the app controls. By default, the width limit grows as you zoom above 100%; switch that off for a fixed limit.
+
+| When your document contains… | Native Markdown gives you… |
+| --- | --- |
+| Long guides and nested headings | An outline with Jump and section Focus, plus text search |
+| Architecture and process diagrams | Offline Mermaid, SVG zoom, optional pan, and an expanded viewer |
+| Code, equations, and structured notes | Syntax highlighting, KaTeX math, tables, task lists, and selectable text |
+| Local illustrations | Relative images and a zoomable image viewer |
+| A folder full of documentation | A folder tree loaded on demand, keyboard navigation, and an Open in Explorer action |
+
+## Get started
+
+**Current reading platform: Windows with Microsoft Edge WebView2 Runtime.** Build from source using the steps below.
+
+You need Git, a Rust MSVC toolchain, the Visual Studio C++ build tools with Windows SDK, and [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/). The app uses the system runtime and does not install it silently.
+
+```powershell
+git clone https://github.com/zaopuppy/native-markdown.git
+cd native-markdown
+cargo build --release --locked
+.\target\release\native-markdown.exe .\docs\demo.md
+```
+
+The [sample notebook](docs/demo.md) is the document used in the screenshots. Try expanding its diagram, switching to Split, and choosing a theme from the gear menu.
+
+To open your own document:
+
+```powershell
+.\target\release\native-markdown.exe "C:\path\to\your\notes.md"
+```
+
+Launch without a path for the welcome screen. Running the app requires no Node runtime or frontend build step.
+
+## Keyboard shortcuts
 
 | Action | Shortcut |
 | --- | --- |
-| Open | `Ctrl+O` |
-| Save | `Ctrl+S` |
-| Save As | `Ctrl+Shift+S` |
+| New / Open | `Ctrl+N` / `Ctrl+O` |
+| Save / Save As | `Ctrl+S` / `Ctrl+Shift+S` |
 | Find | `Ctrl+F` |
-| Toggle preview/editing | `Ctrl+E` |
+| Next / previous match, with Find focused | `Enter` / `Shift+Enter` |
 | Preview / Split / Source | `Ctrl+1` / `Ctrl+2` / `Ctrl+3` |
+| Toggle preview and editing | `Ctrl+E` |
 | Zoom in / out / reset | `Ctrl++` / `Ctrl+-` / `Ctrl+0` |
 
-Use `Ctrl+mouse-wheel` for document zooming, or inside a diagram for independent SVG zooming. Toggle **Pan** before dragging a diagram; leave Pan off to select and copy its text. Click a local image to open its zoomable viewer.
+Use `Ctrl+mouse-wheel` to zoom the document; inside a diagram, it zooms that diagram independently. Leave **Pan** off to select inline diagram text. In the expanded viewer, choose **Select text** to copy labels and press `Esc` to return. Click a local image to open its viewer.
 
-Windows and Microsoft Edge WebView2 Runtime are required for the reading surface. Initialization failure shows an explicit error; source editing and saving remain available. There is no native preview fallback or renderer selection environment variable, and the app does not install a runtime silently. Other platforms do not yet have a supported reading backend.
+With the file tree focused, use `Up` / `Down` to move, `Left` / `Right` to collapse or expand, and `Enter` to open a file.
 
-Relative local images are restricted to the active document folder. Remote images are disabled. See [the rendering evaluation](docs/markdown-rendering-evaluation.md) for historical process-tree memory measurements and the final architecture.
+## Local files, clear boundaries
 
-When the file tree is focused, use `Up` / `Down` to move, `Left` / `Right` to collapse or expand folders, and `Enter` to open a Markdown file.
+Your documents stay ordinary UTF-8 Markdown files. Mermaid, math, and code highlighting use bundled assets and work without a CDN.
 
-## Mermaid and reading interaction
+- Markdown HTML is sanitized. Scripts, iframes, external diagram resources, and runtime Mermaid configuration are blocked.
+- Local images and Markdown document links must stay within the active document directory. Remote images are disabled.
+- Recent history holds up to **20 files and 20 explicitly opened folders**. It loads once at startup; displaying the list never scans directories or checks recorded paths.
 
-Offline Mermaid.js renders inline SVG with selectable labels, independent zoom, Fit and optional drag-to-pan. Normal text selection works with Pan disabled. Use **Expand** to inspect a diagram in the same reading-area overlay as images, with Move / Select text modes, zoom, Fit and 100%. Close or press Esc to return to the unchanged inline zoom, Pan mode and scroll position. A broken diagram shows its error without blocking the document. The reading surface, code blocks and diagrams use narrow rounded scrollbars without arrow buttons.
+<details>
+<summary>Storage and rendering details</summary>
 
-Untrusted Markdown HTML is sanitized. Scripts, runtime diagram configuration, external diagram resources and arbitrary Rust IPC are blocked. Each document allows up to 64 diagrams, each with at most 256 KiB of source and 1,500 edges. Mermaid frontmatter is currently rejected, including title-only frontmatter.
+Recent history lives at `%APPDATA%/NativeMarkdown/recent.json`, with a 64 KiB read/write limit. Successfully opening a path absent from its current list triggers one atomic snapshot write. Reopening a listed path only reorders it in memory; there are no timer or exit writes. Following a document's folder implicitly does not add a folder record. Write failures retain the in-memory history and show an error.
 
-## Building
+Theme and sidebar layout are stored in `%APPDATA%/NativeMarkdown/layout.conf`. Reading-width choices and the scroll-sync toggle stay in memory for the current run. Unsaved-edit recovery uses `%TEMP%/native-markdown-recovery.md`.
 
-```bash
-cargo build --release
+The reading area is a WebView2 child window inside the native GPUI shell. If initialization fails, the app shows an error; source editing and saving remain available. There is no native preview fallback. Linux and macOS do not yet have a supported reading backend.
+
+Mermaid currently rejects frontmatter, including title-only frontmatter. Limits are 64 diagrams per document, 256 KiB of source per diagram, and 1,500 edges per diagram. Very complex diagrams can still stall the reading surface temporarily.
+
+In section Focus, scroll sync follows the displayed section; scrolling the source outside it leaves the preview in place. Search uses Markdown source mapping, so matches in rendered diagrams, math, or HTML tables may be approximate.
+
+</details>
+
+## For contributors
+
+The app uses official **GPUI Component 0.10.0**, **gpui-pre/platform 0.3.12**, and **Wry 0.57.3**. Rust owns the window, file tree, source editor, and file lifecycle; WebView2 handles reading. The web assets include Mermaid, KaTeX, highlight.js, and DOMPurify with bundled license files in [assets/web/vendor](assets/web/vendor).
+
+See the [rendering evaluation](docs/markdown-rendering-evaluation.md) for architecture decisions, historical measurements, and their limits, and the [component upgrade notes](docs/gpui-component-fork.md) for dependency details. A system WebView still has browser-process costs; historical benchmarks are not performance guarantees for the current build.
+
+<details>
+<summary>Development checks and performance measurement</summary>
+
+```powershell
+cargo fmt --check
+cargo test --all-targets
+cargo clippy --all-targets -- -D warnings
+node --check assets/web/reader.js
+uv run --with playwright python scripts/test-web-preview.py --binary target/release/native-markdown.exe
+uv run --with playwright python scripts/test-scroll-sync.py --binary target/release/native-markdown.exe
+python scripts/test-delayed-web-preview.py --binary target/release/native-markdown.exe --runs 3
 ```
 
-The binary will be at `target/release/native-markdown.exe` on Windows.
+The WebView scripts exercise the actual Windows reading backend using an opt-in loopback debugging port. They need no Playwright browser download. Run file-writing tests with isolated temporary configuration and documents.
 
-## Running
-
-```bash
-cargo run
-# Open a document directly
-cargo run -- path/to/document.md
-# or directly:
-./target/release/native-markdown
-```
-
-## Memory regression benchmark
-
-The measurement script records the application and its WebView2 descendants, including process-level Working Set, Private Working Set, Private Bytes and CPU. Shared working sets must not be treated as exclusive memory:
+To measure the host and its WebView2 descendants together:
 
 ```powershell
 python scripts/make-rendering-fixtures.py
@@ -74,25 +147,10 @@ python scripts/make-rendering-fixtures.py
 python scripts/summarize-rendering.py tmp\webview.json
 ```
 
-The earlier native budget harness and renderer prototypes have been retired. Historical comparison results remain in `docs/measurements`; they are not measurements of every later build.
+Keep Private Bytes, Private Working Set, and shared Working Set distinct. The retired native renderer's budgets do not describe today's WebView architecture.
 
-## Verification
+</details>
 
-```powershell
-cargo test --all-targets
-cargo clippy --all-targets -- -D warnings
-uv run --with playwright python scripts/test-web-preview.py --binary target/release/native-markdown.exe
-uv run --with playwright python scripts/test-scroll-sync.py --binary target/release/native-markdown.exe
-python scripts/test-delayed-web-preview.py --binary target/release/native-markdown.exe --runs 3
-```
+Found a document that renders badly or an interaction that gets in your way? [Open an issue](https://github.com/zaopuppy/native-markdown/issues) with a small sample, the app revision, and your Windows/WebView2 versions. Focused fixes and reproducible reports are welcome.
 
-The first suite checks native editor, file lifecycle, analysis and sanitized HTML projection. The latter scripts exercise the actual WebView2 process and delayed-open lifecycle; no native reading implementation substitutes for those tests.
-
-## Tech Stack
-
-- **GPUI**: GPU-accelerated native window and rendering runtime
-- **GPUI Component 0.10.0**: Official crates.io release, with gpui-pre/platform 0.3.12; application-owned search integration and no local fork. See [upgrade notes](docs/gpui-component-fork.md)
-- **Wry + system WebView2**: One Windows reading surface, with no bundled browser engine
-- **pulldown-cmark + ammonia**: HTML projection, safety, outline, search and metadata
-- **Offline JavaScript assets**: Mermaid, KaTeX, highlight.js and DOMPurify, with pinned versions and licenses
-- **rfd**: Native file dialogs
+<!-- Screenshots: actual Windows release app, captured 2026-11-22 using docs/demo.md and isolated APPDATA/WebView2 profiles. Detail images are crops; no UI mockups. -->
