@@ -2197,10 +2197,16 @@ impl NativeMarkdownApp {
                             .small()
                             .ghost()
                             .disabled(root.is_none())
-                            .tooltip("打开当前文件夹（文件资源管理器）")
+                            .tooltip("打开当前文件夹并定位当前文件（文件资源管理器）")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 if let Some(root) = this.file_tree.root() {
-                                    cx.open_with_system(root);
+                                    if let Some(path) = this.document.path.as_deref()
+                                        .filter(|path| path.starts_with(root))
+                                    {
+                                        cx.reveal_path(path);
+                                    } else {
+                                        cx.open_with_system(root);
+                                    }
                                 }
                             })),
                     )
