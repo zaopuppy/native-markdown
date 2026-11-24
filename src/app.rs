@@ -3085,7 +3085,16 @@ impl Render for NativeMarkdownApp {
             self.document.display_name()
         ));
 
-        if window.focused(cx).is_none() {
+        // Removing the editor leaves its FocusHandle alive but outside the dispatch tree.
+        // GPUI still reports Some(focus), so later app shortcuts have no dispatch path.
+        if window.focused(cx).is_none()
+            || (self.view_mode == ViewMode::Preview
+                && self
+                    .editor
+                    .read(cx)
+                    .focus_handle(cx)
+                    .contains_focused(window, cx))
+        {
             self.app_focus.focus(window, cx);
         }
 
@@ -3234,6 +3243,65 @@ mod tests {
         cx.update(|window, cx| {
             let _ = window.draw(cx);
         });
+    }
+
+    #[gpui::test]
+    fn mode_shortcuts_survive_removing_the_focused_editor(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        cx.update(bind_keys);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mode-shortcuts.md");
+        std::fs::write(&path, "# Mode shortcuts\n\nEditable text.").unwrap();
+        let mut app = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| NativeMarkdownApp::new(Some(path), window, cx));
+            app = Some(view.clone());
+            gpui_component::Root::new(view, window, cx)
+        });
+        let app = app.unwrap();
+        cx.simulate_resize(size(px(1180.0), px(780.0)));
+        draw_app(cx);
+        for focus_editor in [true, false] {
+            for entry in ["ctrl-2", "ctrl-3"] {
+                for preview in ["ctrl-1", "ctrl-e"] {
+                    for (exit, expected) in [
+                        ("ctrl-2", ViewMode::Split),
+                        ("ctrl-3", ViewMode::Source),
+                        ("ctrl-e", ViewMode::Split),
+                    ] {
+                        cx.simulate_keystrokes(entry);
+                        draw_app(cx);
+                        cx.update(|window, cx| {
+                            let app = app.read(cx);
+                            if focus_editor {
+                                app.editor.clone().update(cx, |editor, cx| {
+                                    editor.set_selected_range(2..6, cx);
+                                    editor.focus(window, cx);
+                                });
+                            } else {
+                                app.file_tree_focus.clone().focus(window, cx);
+                            }
+                        });
+                        draw_app(cx);
+                        cx.simulate_keystrokes(preview);
+                        draw_app(cx);
+                        app.read_with(cx, |app, _| assert_eq!(app.view_mode, ViewMode::Preview));
+                        cx.simulate_keystrokes(exit);
+                        draw_app(cx);
+                        app.read_with(cx, |app, cx| {
+                            assert_eq!(
+                                app.view_mode, expected,
+                                "{entry} / {preview} / {exit}, editor focus: {focus_editor}"
+                            );
+                            assert_eq!(app.document.content, "# Mode shortcuts\n\nEditable text.");
+                            if focus_editor {
+                                assert_eq!(app.editor.read(cx).selected_range(), 2..6);
+                            }
+                        });
+                    }
+                }
+            }
+        }
     }
 
     #[gpui::test]

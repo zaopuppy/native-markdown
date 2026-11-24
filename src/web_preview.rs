@@ -81,6 +81,8 @@ impl WebPreview {
         let mut builder = WebViewBuilder::new_with_web_context(&mut context)
             .with_bounds(wry::Rect::default())
             .with_visible(false)
+            // This hidden child must not take keyboard focus from the native shell on startup.
+            .with_focused(false)
             .with_background_color(background_color(appearance))
             .with_browser_accelerator_keys(false)
             .with_custom_protocol("reader".into(), move |_, request| {
