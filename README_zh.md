@@ -58,7 +58,9 @@ Mermaid 在本地渲染为 SVG。放大查看细节，用 **Fit** 看全局，�
 
 ## 开始使用
 
-**当前阅读平台为 Windows，需要 Microsoft Edge WebView2 Runtime。** 可以按下面的步骤从源码构建。
+**当前阅读平台为 Windows x64，需要 Microsoft Edge WebView2 Runtime。**
+
+从 [Releases](https://github.com/zaopuppy/native-markdown/releases) 下载免安装 ZIP，解压后运行 `native-markdown.exe`，将随包 DLL 保留在程序旁边。如果还没有发布版本，可以按下面的步骤从源码构建。[自动发布流程与维护说明](docs/releases.md)。
 
 准备 Git、Rust MSVC 工具链、带 Windows SDK 的 Visual Studio C++ 构建工具，以及 [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)。应用使用系统 Runtime，不会静默安装。
 

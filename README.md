@@ -58,7 +58,9 @@ Pick a reading width of **720, 980, 1280 px, or full width**. Zoom the document 
 
 ## Get started
 
-**Current reading platform: Windows with Microsoft Edge WebView2 Runtime.** Build from source using the steps below.
+**Current reading platform: Windows x64 with Microsoft Edge WebView2 Runtime.**
+
+Download the portable ZIP from [Releases](https://github.com/zaopuppy/native-markdown/releases), extract it, and run `native-markdown.exe`. Keep the included DLLs beside the executable. If no release has been published yet, build from source using the steps below. [Release workflow and maintainer instructions](docs/releases.md).
 
 You need Git, a Rust MSVC toolchain, the Visual Studio C++ build tools with Windows SDK, and [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/). The app uses the system runtime and does not install it silently.
 
