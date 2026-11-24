@@ -10,6 +10,7 @@ use gpui::{
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Editor, EditorState, Escape, Input, InputEvent, InputState};
+#[cfg(not(windows))]
 use gpui_component::menu::ContextMenuExt as _;
 #[cfg(not(windows))]
 use gpui_component::menu::DropdownMenu as _;
@@ -198,8 +199,6 @@ pub struct NativeMarkdownApp {
     web_error: Option<String>,
     #[cfg(windows)]
     web_starting: bool,
-    #[cfg(windows)]
-    native_popup_open: bool,
     appearance: Appearance,
     reading_width: u16,
     reading_width_follows_zoom: bool,
@@ -426,21 +425,14 @@ impl NativeMarkdownApp {
     }
 
     #[cfg(windows)]
-    fn suspend_for_popup(
-        &mut self,
-        menu: Entity<gpui_component::menu::PopupMenu>,
-        cx: &mut Context<Self>,
-    ) {
-        self.native_popup_open = true;
-        if let Some(view) = &self.web_preview {
-            view.borrow_mut().set_allowed(false);
-        }
-        cx.subscribe(&menu, |this, _, _: &gpui::DismissEvent, cx| {
-            this.native_popup_open = false;
-            cx.notify();
-        })
-        .detach();
-        cx.notify();
+    fn web_preview_allowed(&self, width: f32) -> bool {
+        let (_, _, overlay_tree, overlay_outline) = self.responsive_panel_visibility(width);
+        // Native dialogs have their own top-level window. Their in-flight flag guards
+        // operations, but must not blank the reading surface behind them.
+        self.view_mode != ViewMode::Source
+            && !overlay_tree
+            && !overlay_outline
+            && !self.settings_open
     }
     #[cfg(windows)]
     fn sync_web_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -452,14 +444,9 @@ impl NativeMarkdownApp {
             self.web_preview.take();
             return;
         }
-        let (_, regular_outline, overlay_tree, overlay_outline) =
+        let (_, regular_outline, _, _) =
             self.responsive_panel_visibility(window.viewport_size().width.into());
-        let visible = self.view_mode != ViewMode::Source
-            && !self.dialog_in_flight
-            && !overlay_tree
-            && !overlay_outline
-            && !self.native_popup_open
-            && !self.settings_open;
+        let visible = self.web_preview_allowed(window.viewport_size().width.into());
         let (source, offset) = self.preview_source();
         let sync_enabled = visible && self.view_mode == ViewMode::Split && self.sync_scroll_enabled;
         self.scroll_sync.configure(
@@ -593,8 +580,7 @@ impl NativeMarkdownApp {
                         .responsive_panel_visibility(window.viewport_size().width.into())
                         .1
                     && !self.settings_open
-                    && !self.dialog_in_flight
-                    && !self.native_popup_open =>
+                    && !self.dialog_in_flight =>
             {
                 let parse_offset = |name| {
                     value[name]
@@ -931,8 +917,6 @@ impl NativeMarkdownApp {
             web_error: None,
             #[cfg(windows)]
             web_starting: false,
-            #[cfg(windows)]
-            native_popup_open: false,
             appearance: layout.appearance,
             reading_width: 980,
             reading_width_follows_zoom: true,
@@ -1790,6 +1774,61 @@ impl NativeMarkdownApp {
     }
 
     #[cfg(windows)]
+    fn open_tree_context_menu(
+        &mut self,
+        path: PathBuf,
+        is_directory: bool,
+        position: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::native_menu::{Command, Item, Popup};
+        if cfg!(test) {
+            return; // Headless tests exercise the right-click path without a native modal loop.
+        }
+        let item = if is_directory {
+            Item::command("Set as root", Command::OpenFolder)
+        } else {
+            Item::command("Open", Command::Open)
+        };
+        let popup = match Popup::capture(window, position, false, vec![item]) {
+            Ok(popup) => popup,
+            Err(error) => {
+                self.set_notice(format!("Could not open menu: {error}"), true);
+                cx.notify();
+                return;
+            }
+        };
+        let app = cx.entity().downgrade();
+        window
+            .spawn(cx, async move |cx| {
+                // TrackPopupMenuEx can reenter GPUI: release entity/window borrows first.
+                cx.background_executor()
+                    .timer(Duration::from_millis(1))
+                    .await;
+                let result = popup.show();
+                let _ = cx.update(|window, cx| {
+                    let _ = app.update(cx, |this, cx| match result {
+                        Ok(Some(Command::OpenFolder)) if is_directory => {
+                            this.set_file_tree_root(Some(path), window, cx)
+                        }
+                        Ok(Some(Command::Open)) if !is_directory => this.request_document_action(
+                            DocumentAction::OpenTreePath(path),
+                            window,
+                            cx,
+                        ),
+                        Err(error) => {
+                            this.set_notice(format!("Could not open menu: {error}"), true);
+                            cx.notify();
+                        }
+                        _ => {}
+                    });
+                });
+            })
+            .detach();
+    }
+
+    #[cfg(windows)]
     fn open_toolbar_menu(&mut self, file_menu: bool, window: &mut Window, cx: &mut Context<Self>) {
         use crate::native_menu::{Command, Item, Popup};
         if cfg!(test) {
@@ -2370,6 +2409,7 @@ impl NativeMarkdownApp {
                         let focus = self.file_tree_focus.clone();
                         let row_element = div()
                             .id(("file-tree-row", row_index))
+                            .debug_selector(move || format!("file-tree-row-{row_index}"))
                             .h_flex()
                             .h(px(30.0))
                             .items_center()
@@ -2428,35 +2468,48 @@ impl NativeMarkdownApp {
                                 }
                             }));
 
-                        body = if is_directory {
-                            let menu_path = path.clone();
-                            let app = cx.entity().downgrade();
-                            body.child(row_element.context_menu(move |menu, _, cx| {
-                                #[cfg(windows)]
-                                let popup = cx.entity();
-                                app.update(cx, |app, cx| {
-                                    app.tree_context_path = Some(menu_path.clone());
-                                    #[cfg(windows)]
-                                    app.suspend_for_popup(popup, cx);
-                                })
-                                .ok();
-                                menu.menu("Set as root", Box::new(SetTreeRootContext))
-                            }))
-                        } else {
-                            let menu_path = path.clone();
-                            let app = cx.entity().downgrade();
-                            body.child(row_element.context_menu(move |menu, _, cx| {
-                                #[cfg(windows)]
-                                let popup = cx.entity();
-                                app.update(cx, |app, cx| {
-                                    app.tree_context_path = Some(menu_path.clone());
-                                    #[cfg(windows)]
-                                    app.suspend_for_popup(popup, cx);
-                                })
-                                .ok();
-                                menu.menu("Open", Box::new(OpenTreeContext))
-                            }))
-                        };
+                        #[cfg(windows)]
+                        {
+                            body = body.child(row_element.on_mouse_down(
+                                gpui::MouseButton::Right,
+                                cx.listener(
+                                    move |this, event: &gpui::MouseDownEvent, window, cx| {
+                                        cx.stop_propagation();
+                                        this.open_tree_context_menu(
+                                            path.clone(),
+                                            is_directory,
+                                            event.position,
+                                            window,
+                                            cx,
+                                        );
+                                    },
+                                ),
+                            ));
+                        }
+                        #[cfg(not(windows))]
+                        {
+                            body = if is_directory {
+                                let menu_path = path.clone();
+                                let app = cx.entity().downgrade();
+                                body.child(row_element.context_menu(move |menu, _, cx| {
+                                    app.update(cx, |app, cx| {
+                                        app.tree_context_path = Some(menu_path.clone());
+                                    })
+                                    .ok();
+                                    menu.menu("Set as root", Box::new(SetTreeRootContext))
+                                }))
+                            } else {
+                                let menu_path = path.clone();
+                                let app = cx.entity().downgrade();
+                                body.child(row_element.context_menu(move |menu, _, cx| {
+                                    app.update(cx, |app, cx| {
+                                        app.tree_context_path = Some(menu_path.clone());
+                                    })
+                                    .ok();
+                                    menu.menu("Open", Box::new(OpenTreeContext))
+                                }))
+                            };
+                        }
                     }
                     VisibleRow::Loading {
                         depth, refreshing, ..
@@ -3236,6 +3289,44 @@ mod tests {
 
     #[gpui::test]
     #[cfg(windows)]
+    fn tree_context_menu_keeps_document_visible(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("context.md");
+        std::fs::write(&path, "# Still visible").unwrap();
+        let mut app = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| NativeMarkdownApp::new(Some(path.clone()), window, cx));
+            app = Some(view.clone());
+            gpui_component::Root::new(view, window, cx)
+        });
+        let app = app.unwrap();
+        cx.simulate_resize(size(px(1180.0), px(780.0)));
+        app.update(cx, |app, cx| {
+            let request = app.file_tree.begin_load(directory.path());
+            assert!(app.file_tree.finish_load(
+                directory.path(),
+                request,
+                file_tree::scan_directory(directory.path(), false)
+            ));
+            cx.notify();
+        });
+        draw_app(cx);
+        let row = cx.debug_bounds("file-tree-row-0").unwrap().center();
+        cx.simulate_mouse_down(row, gpui::MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(row, gpui::MouseButton::Right, Modifiers::default());
+        draw_app(cx);
+        app.read_with(cx, |app, _| {
+            assert!(
+                app.web_preview_allowed(1180.0),
+                "tree context menu must not suspend the document WebView"
+            );
+            assert_eq!(app.document.content, "# Still visible");
+        });
+    }
+
+    #[gpui::test]
+    #[cfg(windows)]
     fn file_menu_keeps_document_visible(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
         let mut app = None;
@@ -3260,7 +3351,7 @@ mod tests {
         draw_app(cx);
         app.read_with(cx, |app, _| {
             assert!(
-                !app.native_popup_open,
+                app.web_preview_allowed(1180.0),
                 "opening File must not suspend the document WebView"
             );
         });
@@ -3556,6 +3647,14 @@ mod tests {
         });
 
         assert!(cx.has_pending_prompt());
+        #[cfg(windows)]
+        app.read_with(cx, |app, _| {
+            assert!(app.dialog_in_flight);
+            assert!(
+                app.web_preview_allowed(1180.0),
+                "a native modal dialog must not hide the reading surface"
+            );
+        });
         cx.executor().advance_clock(Duration::from_millis(1_100));
         cx.run_until_parked();
         assert!(cx.has_pending_prompt());
