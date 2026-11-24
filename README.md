@@ -36,6 +36,8 @@ An invalid diagram shows its error and source while the rest of the document rem
 
 Press `Ctrl+2` for source and preview side by side. Both panes follow the same Markdown block as you scroll, including wrapped source lines. Turn off **Sync scrolling** whenever you want to compare different passages.
 
+The preview and outline refresh after you stop typing for **3 seconds**. Each edit restarts the delay; saving always uses your latest text. Scroll sync pauses until the preview catches up. Opening a document or explicitly using Find updates immediately.
+
 ![Midnight theme detail: Markdown source beside highlighted Rust code, typeset math, and a task list](docs/screenshots/split-detail.png)
 
 *A crop of the real split view in Midnight. Code, math, and checklists keep their context.*

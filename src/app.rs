@@ -234,6 +234,7 @@ pub struct NativeMarkdownApp {
     workspace_panel_visibility: Option<(bool, bool)>,
     search_open: bool,
     preview_markdown: SharedString,
+    pending_analysis: Option<gpui::Task<()>>,
     focused_section: Option<usize>,
     selected_heading: Option<usize>,
     // None means no observation yet; Some(None) is the introduction before any heading.
@@ -449,7 +450,10 @@ impl NativeMarkdownApp {
             self.responsive_panel_visibility(window.viewport_size().width.into());
         let visible = self.web_preview_allowed(window.viewport_size().width.into());
         let (source, offset) = self.preview_source();
-        let sync_enabled = visible && self.view_mode == ViewMode::Split && self.sync_scroll_enabled;
+        let sync_enabled = visible
+            && self.view_mode == ViewMode::Split
+            && self.sync_scroll_enabled
+            && self.pending_analysis.is_none();
         self.scroll_sync.configure(
             sync_enabled,
             self.preview_markdown.clone(),
@@ -540,9 +544,9 @@ impl NativeMarkdownApp {
         let range = self
             .focused_section
             .and_then(|section| {
-                markdown::focus_range(&self.document.content, &self.outline, section)
+                markdown::focus_range(&self.preview_markdown, &self.outline, section)
             })
-            .unwrap_or(0..self.document.content.len());
+            .unwrap_or(0..self.preview_markdown.len());
         if base != range.start || end != range.end {
             return false;
         }
@@ -611,6 +615,7 @@ impl NativeMarkdownApp {
             Some("scroll-position")
                 if self.view_mode == ViewMode::Split
                     && self.sync_scroll_enabled
+                    && self.pending_analysis.is_none()
                     && !self.settings_open =>
             {
                 if let (Some(start), Some(fraction), Some(edge), Some(revision)) = (
@@ -844,10 +849,15 @@ impl NativeMarkdownApp {
                 window,
                 |this: &mut Self, editor, event: &InputEvent, _window, cx| {
                     if matches!(event, InputEvent::Change) {
-                        this.document.content = editor.read(cx).value().to_string();
+                        let content = editor.read(cx).value().to_string();
+                        // set_value during document replacement may emit a deferred Change.
+                        if this.document.content == content {
+                            return;
+                        }
+                        this.document.content = content;
                         this.source_search.clear();
 
-                        this.refresh_analysis();
+                        this.schedule_analysis(cx);
 
                         if let Err(error) = this.document.maybe_write_recovery() {
                             this.set_notice(format!("Recovery copy failed: {error}"), true);
@@ -862,6 +872,7 @@ impl NativeMarkdownApp {
                 |this: &mut Self, input, event: &InputEvent, _window, cx| match event {
                     InputEvent::Change => {
                         this.search_query = input.read(cx).value().to_string();
+                        this.flush_pending_analysis();
                         this.active_hit = 0;
                         this.active_search_offset = None;
 
@@ -957,6 +968,7 @@ impl NativeMarkdownApp {
             workspace_panel_visibility: None,
             search_open: false,
             preview_markdown,
+            pending_analysis: None,
             focused_section: None,
             selected_heading: None,
             reading_heading: None,
@@ -988,7 +1000,31 @@ impl NativeMarkdownApp {
         }
     }
 
+    fn schedule_analysis(&mut self, cx: &mut Context<Self>) {
+        // Dropping the previous task cancels its timer, so only the last edit publishes.
+        self.pending_analysis = None;
+        self.active_search_offset = None;
+        self.active_hit = 0;
+        if self.document.content.as_str() == self.preview_markdown.as_ref() {
+            return;
+        }
+        self.pending_analysis = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_secs(3)).await;
+            let _ = this.update(cx, |this, cx| {
+                this.refresh_analysis();
+                cx.notify();
+            });
+        }));
+    }
+
+    fn flush_pending_analysis(&mut self) {
+        if self.pending_analysis.is_some() {
+            self.refresh_analysis();
+        }
+    }
+
     fn refresh_analysis(&mut self) {
+        self.pending_analysis = None;
         self.reading_heading = None;
         self.outline_revision = self.outline_revision.wrapping_add(1);
         self.active_search_offset = None;
@@ -1581,6 +1617,7 @@ impl NativeMarkdownApp {
     }
 
     fn show_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.flush_pending_analysis();
         self.focus_native_surface();
         self.search_open = true;
         self.search_input.update(cx, |input, cx| {
@@ -1611,6 +1648,7 @@ impl NativeMarkdownApp {
     }
 
     fn next_hit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.flush_pending_analysis();
         if !self.search_hits.is_empty() {
             if self.active_search_offset.is_some() {
                 self.active_hit = (self.active_hit + 1) % self.search_hits.len();
@@ -1620,6 +1658,7 @@ impl NativeMarkdownApp {
     }
 
     fn previous_hit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.flush_pending_analysis();
         if !self.search_hits.is_empty() {
             self.active_hit = if self.active_hit == 0 {
                 self.search_hits.len() - 1
@@ -2611,7 +2650,7 @@ impl NativeMarkdownApp {
 
     fn outline_panel(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let active_heading = self.active_outline_heading();
-        let sections = markdown::sections(&self.document.content, &self.outline);
+        let sections = markdown::sections(&self.preview_markdown, &self.outline);
         let mut panel = div()
             .debug_selector(|| "outline-panel".into())
             .v_flex()
@@ -2667,7 +2706,7 @@ impl NativeMarkdownApp {
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.outline_mode = OutlineMode::Focus;
                             this.focused_section = this.selected_heading.and_then(|heading| {
-                                markdown::sections(&this.document.content, &this.outline)
+                                markdown::sections(&this.preview_markdown, &this.outline)
                                     .iter()
                                     .position(|section| section.heading_index == Some(heading))
                             });
@@ -2757,13 +2796,13 @@ impl NativeMarkdownApp {
 
     fn preview_source(&self) -> (SharedString, usize) {
         let Some(range) = self.focused_section.and_then(|section_index| {
-            markdown::focus_range(&self.document.content, &self.outline, section_index)
+            markdown::focus_range(&self.preview_markdown, &self.outline, section_index)
         }) else {
             return (self.preview_markdown.clone(), 0);
         };
         let source_offset = range.start;
         (
-            SharedString::from(self.document.content[range].to_owned()),
+            SharedString::from(self.preview_markdown[range].to_owned()),
             source_offset,
         )
     }
@@ -3251,6 +3290,105 @@ mod tests {
         cx.run_until_parked();
         cx.update(|window, cx| {
             let _ = window.draw(cx);
+        });
+    }
+
+    #[gpui::test]
+    fn editor_refresh_waits_three_seconds_after_the_last_change(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        cx.update(bind_keys);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("debounce.md");
+        let original = "# Parent\n\n## Child\n\nOriginal text.";
+        std::fs::write(&path, original).unwrap();
+        let (app, cx) = cx.add_window_view(|window, cx| {
+            let mut app = NativeMarkdownApp::new(Some(path.clone()), window, cx);
+            app.view_mode = ViewMode::Split;
+            app.focused_section = Some(1);
+            app
+        });
+        cx.simulate_resize(size(px(1180.0), px(780.0)));
+        cx.update(|window, cx| {
+            app.read(cx).editor.clone().update(cx, |editor, cx| {
+                editor.set_selected_range(0..original.len(), cx);
+                editor.focus(window, cx);
+            })
+        });
+        draw_app(cx);
+        let focused_preview = app.read_with(cx, |app, _| app.preview_source());
+        let revision = app.read_with(cx, |app, _| app.outline_revision);
+        cx.simulate_input("# 新 🦀");
+        draw_app(cx);
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.document.content, "# 新 🦀");
+            assert!(app.document.is_dirty());
+            assert_eq!(
+                app.preview_markdown.as_ref(),
+                original,
+                "typing must not refresh preview"
+            );
+            assert_eq!(
+                app.preview_source(),
+                focused_preview,
+                "Focus must use the same snapshot"
+            );
+        });
+        cx.executor().advance_clock(Duration::from_secs(2));
+        cx.run_until_parked();
+        cx.simulate_input(" final");
+        draw_app(cx);
+        cx.executor().advance_clock(Duration::from_millis(2999));
+        cx.run_until_parked();
+        app.update(cx, |app, cx| {
+            assert_eq!(app.preview_markdown.as_ref(), original);
+            assert_eq!(app.outline_revision, revision);
+            assert!(
+                app.save_existing(cx),
+                "save must use the latest editor text before refresh"
+            );
+        });
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# 新 🦀 final");
+        cx.executor().advance_clock(Duration::from_millis(1));
+        cx.run_until_parked();
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.preview_markdown.as_ref(), "# 新 🦀 final");
+            assert_eq!(app.outline[0].title, "新 🦀 final");
+            assert_eq!(app.outline_revision, revision + 1);
+        });
+        cx.executor().advance_clock(Duration::from_secs(4));
+        cx.run_until_parked();
+        app.read_with(cx, |app, _| assert_eq!(app.outline_revision, revision + 1));
+        // Reverting back to the published snapshot cancels the pending refresh entirely.
+        cx.simulate_input("!");
+        draw_app(cx);
+        cx.simulate_keystrokes("backspace");
+        draw_app(cx);
+        cx.executor().advance_clock(Duration::from_secs(3));
+        cx.run_until_parked();
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.document.content, "# 新 🦀 final");
+            assert_eq!(app.outline_revision, revision + 1);
+        });
+        // A new document is immediate and must cancel any old document's delayed work.
+        cx.simulate_input(" pending");
+        draw_app(cx);
+        let replacement = directory.path().join("replacement.md");
+        std::fs::write(&replacement, "# Replacement").unwrap();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.replace_document(Document::open(replacement).unwrap(), window, cx);
+            })
+        });
+        draw_app(cx);
+        let revision = app.read_with(cx, |app, _| {
+            assert_eq!(app.preview_markdown.as_ref(), "# Replacement");
+            app.outline_revision
+        });
+        cx.executor().advance_clock(Duration::from_secs(4));
+        cx.run_until_parked();
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.preview_markdown.as_ref(), "# Replacement");
+            assert_eq!(app.outline_revision, revision);
         });
     }
 
