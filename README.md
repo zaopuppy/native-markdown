@@ -38,6 +38,8 @@ Press `Ctrl+2` for source and preview side by side. Both panes follow the same M
 
 The preview and outline refresh after you stop typing for **3 seconds**. Each edit restarts the delay; saving always uses your latest text. Scroll sync pauses until the preview catches up. Opening a document or explicitly using Find updates immediately.
 
+Preview updates reuse unchanged content blocks, including rendered diagrams, formulas, and code highlighting. An unchanged diagram keeps its zoom and expanded viewer; an edited diagram keeps its previous drawing until the new result is ready.
+
 ![Midnight theme detail: Markdown source beside highlighted Rust code, typeset math, and a task list](docs/screenshots/split-detail.png)
 
 *A crop of the real split view in Midnight. Code, math, and checklists keep their context.*
@@ -142,6 +144,7 @@ python scripts/test-delayed-web-preview.py --binary target/debug/native-markdown
 node --check assets/web/reader.js
 uv run --with playwright python scripts/test-web-preview.py --binary target/release/native-markdown.exe
 uv run --with playwright python scripts/test-scroll-sync.py --binary target/release/native-markdown.exe
+uv run --with playwright python scripts/test-incremental-preview.py --binary target/release/native-markdown.exe
 uv run --with playwright --with psutil python scripts/test-outline-follow.py --binary target/release/native-markdown.exe
 python scripts/test-delayed-web-preview.py --binary target/release/native-markdown.exe --runs 3
 ```

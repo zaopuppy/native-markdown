@@ -6,6 +6,7 @@ let revision = 0;
 let observer;
 let highlightObserver;
 let diagramQueue = Promise.resolve();
+let diagramSerial = 0;
 let state = {zoom:1, heading:null, navigation:0, query:'', occurrence:0, searchRequest:0,
   theme:{id:document.documentElement.dataset.theme,dark:document.documentElement.dataset.dark==='true'}};
 let appliedNavigation = -1, appliedSearch = -1, reloadTicket = 0, loading = false;
@@ -26,18 +27,24 @@ function button(label, action, tools) {
   const element = document.createElement('button'); element.type = 'button'; element.textContent = label;
   element.addEventListener('click', action); tools.append(element); return element;
 }
-async function renderDiagram(box, code, index, currentRevision) {
-  if (revision !== currentRevision || !box.isConnected) return;
-  const began = performance.now(), requestedTheme = state.theme?.id;
+async function renderDiagram(box, job) {
+  const {code,index} = job, began = performance.now(), requestedTheme = job.theme;
+  const valid = () => box.isConnected && box.readerDiagram === job && state.theme?.id === requestedTheme;
+  if (!valid()) return;
+  let renderHost;
   try {
     if (index >= 64 || code.length > 262144) throw new Error('Diagram exceeds the 64 diagrams / 256 KiB limit');
     if (/%%\s*\{|^\s*---/m.test(code)) throw new Error('Document Mermaid configuration is disabled');
     await loadScript('mermaid');
-    if (revision !== currentRevision || requestedTheme !== state.theme?.id) return;
+    if (!valid()) return;
     mermaid.initialize({startOnLoad: false, securityLevel: 'strict', htmlLabels: false, maxTextSize: 262144, maxEdges: 1500,
       suppressErrorRendering: true, flowchart: {htmlLabels: false}, theme: state.theme?.dark ? 'dark' : 'default'});
-    const {svg} = await mermaid.render(`diagram-${currentRevision}-${index}`, code);
-    if (revision !== currentRevision || !box.isConnected || requestedTheme !== state.theme?.id) return;
+    // Mermaid may insert temporary markup. Keep that work outside the visible document.
+    renderHost=document.createElement('div');
+    Object.assign(renderHost.style,{position:'absolute',left:'-100000px',top:'0',width:`${box.clientWidth || 800}px`,visibility:'hidden'});
+    document.body.append(renderHost);
+    const {svg} = await mermaid.render(`diagram-${++diagramSerial}`, code, renderHost);
+    if (!valid()) return;
     const tools = document.createElement('div'); tools.className = 'diagram-tools';
     const stage = document.createElement('div'); stage.className = 'diagram-stage';
     stage.innerHTML = DOMPurify.sanitize(svg, {USE_PROFILES: {svg:true, svgFilters:true}, FORBID_TAGS: ['foreignObject', 'a', 'image', 'script']});
@@ -69,55 +76,201 @@ async function renderDiagram(box, code, index, currentRevision) {
     stage.addEventListener('pointermove', event => { if (drag) { stage.scrollLeft=drag.left-(event.clientX-drag.x); stage.scrollTop=drag.top-(event.clientY-drag.y); }});
     const release = () => {drag=undefined;}; stage.addEventListener('pointerup', release); stage.addEventListener('pointercancel', release);
     stage.addEventListener('wheel', event => { if(event.ctrlKey) { event.preventDefault(); event.stopPropagation(); zoom(Math.exp(-event.deltaY*.002)); } }, {passive:false});
-    box.replaceChildren(tools, stage); zoom(1);
+    const anchor=captureAnchor();
+    box.replaceChildren(tools, stage); zoom(1); restoreAnchor(anchor);
+    job.complete=true;
     notify('diagram-ready', {index, ms:performance.now()-began, nodes:drawing.querySelectorAll('*').length});
   } catch(error) {
-    if (revision !== currentRevision || !box.isConnected || requestedTheme !== state.theme?.id) return;
+    if (!valid()) return;
     const message = document.createElement('div'); message.className = 'diagram-error'; message.textContent = `Mermaid: ${error.message || error}`;
-    const source = document.createElement('pre'); source.textContent = code; box.replaceChildren(message,source);
+    const source = document.createElement('pre'); source.textContent = code;
+    const anchor=captureAnchor(); box.replaceChildren(message,source); restoreAnchor(anchor); job.complete=true;
     notify('diagram-error', {index});
+  } finally { renderHost?.remove(); }
+}
+// Content signatures describe sanitized, unenhanced HTML, not byte offsets or
+// generated SVG/KaTeX markup. Offsets are refreshed separately when blocks move.
+const documentBlocks = () => [...root.querySelectorAll(':scope > .reading-section > .source-block')];
+function captureAnchor(blocks=documentBlocks(), retained) {
+  if(viewerDialog || !blocks.length) return;
+  let low=0,high=blocks.length;
+  while(low<high) {const middle=(low+high)>>1;if(blocks[middle].getBoundingClientRect().top<=0)low=middle+1;else high=middle;}
+  const index=Math.max(0,low-1);
+  let element=blocks[index];
+  if(retained && !retained.has(element)) {
+    element=blocks.slice(index+1).find(block=>retained.has(block))
+      || blocks.slice(0,index).reverse().find(block=>retained.has(block));
+  }
+  return element?{element,top:element.getBoundingClientRect().top,x:scrollX}:undefined;
+}
+function restoreAnchor(anchor) {
+  if(anchor?.element.isConnected && !viewerDialog) {
+    const delta=anchor.element.getBoundingClientRect().top-anchor.top;
+    if(Math.abs(delta)>.5) scrollTo(anchor.x,scrollY+delta);
+  }
+}
+function reconcileDocument(fragment, reset) {
+  const oldBlocks=documentBlocks(), incoming=[...fragment.children].flatMap(section=>[...section.children]);
+  // Malformed/raw HTML can escape a generated wrapper during HTML parsing. Keep
+  // sanitization, but fall back to replacement rather than guessing its structure.
+  if([...fragment.children].some(section=>!section.matches('.reading-section')
+    || [...section.children].some(block=>!block.matches('.source-block')))) {
+    dismissViewer();observer?.disconnect();highlightObserver?.disconnect();
+    root.replaceChildren(fragment);documentBlocks().forEach(block=>block.readerHTML=block.innerHTML);
+    return;
+  }
+  const available=new Map(), used=new Set(), replacements=new Map();
+  if(!reset) for(const block of oldBlocks) {
+    const key=block.readerHTML;
+    if(!available.has(key)) available.set(key,{nodes:[],next:0});
+    available.get(key).nodes.push(block);
+  }
+  // Ordered queues give repeated paragraphs distinct identities without a quadratic diff.
+  for(const block of incoming) {
+    block.readerHTML=block.innerHTML;
+    const queue=available.get(block.readerHTML), previous=queue?.nodes[queue.next++];
+    if(previous) {used.add(previous);replacements.set(block,previous);}
+  }
+  const unchanged=new Set(used);
+  // A changed Mermaid block keeps its old drawing while the replacement renders.
+  const oldDiagrams=oldBlocks.filter(block=>!used.has(block) && block.children.length===1 && block.firstElementChild.matches('.diagram'));
+  let nextDiagram=0;
+  if(!reset) incoming.forEach(block=>{
+    if(replacements.has(block)) return;
+    if(block.children.length===1 && block.firstElementChild.matches('pre') && block.querySelector('code.language-mermaid')) {
+      const previous=oldDiagrams[nextDiagram++];
+      if(previous) {used.add(previous);replacements.set(block,previous);}
+    }
+  });
+  if(reset || (viewerDialog && !unchanged.has(viewerDialog.readerOwner))) dismissViewer();
+  const anchor=reset?undefined:captureAnchor(oldBlocks,used);
+  const selection=getSelection();
+  const selected=selection?.rangeCount && root.contains(selection.anchorNode) ? {
+    anchor:selection.anchorNode,anchorOffset:selection.anchorOffset,focus:selection.focusNode,focusOffset:selection.focusOffset
+  }:undefined;
+  const oldSections=[...root.children], usedSections=new Set(), sections=[];
+  const parents=new Map(oldBlocks.map(block=>[block,block.parentElement]));
+  // Reserve matching section wrappers before allocating new ones. Inserting a
+  // heading must not shift every later content-visibility container's identity.
+  const plans=[...fragment.children].map(section=>{
+    const blocks=[...section.children];
+    const target=blocks.map(block=>parents.get(replacements.get(block)))
+      .find(parent=>parent?.parentElement===root && !usedSections.has(parent));
+    if(target) usedSections.add(target);
+    return {section,blocks,target};
+  });
+  let nextSection=0;
+  for(const plan of plans) {
+    const {section,blocks}=plan;
+    let target=plan.target;
+    if(!target) {
+      while(usedSections.has(oldSections[nextSection])) nextSection++;
+      target=oldSections[nextSection] || section.cloneNode(false);
+      usedSections.add(target);
+    }
+    sections.push(target);
+    let cursor=target.firstChild;
+    for(const block of blocks) {
+      const previous=replacements.get(block), node=previous || block;
+      if(previous) {
+        if(previous.dataset.sourceStart!==block.dataset.sourceStart) previous.dataset.sourceStart=block.dataset.sourceStart;
+        if(previous.dataset.sourceEnd!==block.dataset.sourceEnd) previous.dataset.sourceEnd=block.dataset.sourceEnd;
+        if(!unchanged.has(previous)) {
+          const code=block.querySelector('code.language-mermaid').textContent;
+          previous.querySelector('.diagram').readerNextCode=code;
+          previous.readerHTML=block.readerHTML;
+        }
+      }
+      if(node===cursor) cursor=cursor.nextSibling;
+      else target.insertBefore(node,cursor);
+    }
+  }
+  for(const block of oldBlocks) if(!used.has(block)) {
+    block.querySelectorAll('.diagram').forEach(node=>observer?.unobserve(node));
+    block.querySelectorAll('pre > code').forEach(node=>highlightObserver?.unobserve(node));
+    block.remove();
+  }
+  let cursor=root.firstChild;
+  for(const section of sections) {
+    if(section===cursor) cursor=cursor.nextSibling;else root.insertBefore(section,cursor);
+  }
+  for(const section of oldSections) if(!usedSections.has(section)) section.remove();
+  // Moving a retained subtree between sections can collapse a browser selection.
+  // Restore only an existing, affected selection while this surface owns focus.
+  if(selected?.anchor.isConnected && selected.focus.isConnected && document.hasFocus()
+    && (selection.anchorNode!==selected.anchor || selection.focusNode!==selected.focus
+      || selection.anchorOffset!==selected.anchorOffset || selection.focusOffset!==selected.focusOffset)) {
+    selection.setBaseAndExtent(selected.anchor,selected.anchorOffset,selected.focus,selected.focusOffset);
+  }
+  restoreAnchor(anchor);
+}
+function enhanceDocument() {
+  if(!observer) observer=new IntersectionObserver(entries=>{
+    for(const entry of entries) if(entry.isIntersecting) {
+      observer.unobserve(entry.target);
+      const job=entry.target.readerDiagram;
+      if(!job || job.pending || job.complete) continue;
+      job.pending=true;
+      diagramQueue=diagramQueue.catch(()=>{}).then(()=>renderDiagram(entry.target,job));
+    }
+  },{rootMargin:'300px'});
+  root.querySelectorAll('pre > code.language-mermaid').forEach(code=>{
+    const box=document.createElement('section');box.className='diagram';
+    box.readerNextCode=code.textContent;box.textContent='Mermaid · waiting to render';code.parentElement.replaceWith(box);
+  });
+  root.querySelectorAll('.diagram').forEach((box,index)=>{
+    const previous=box.readerDiagram, code=box.readerNextCode ?? previous?.code;
+    if(code===undefined) return;
+    delete box.readerNextCode;
+    if(!previous || previous.code!==code || previous.theme!==state.theme?.id || (previous.index>=64)!==(index>=64)) {
+      box.readerDiagram={code,index,theme:state.theme?.id};
+    } else previous.index=index;
+    if(!box.readerDiagram.complete && !box.readerDiagram.pending) observer.observe(box);
+  });
+  const codes=[...root.querySelectorAll('pre > code:not(.language-mermaid)')].filter(code=>!code.dataset.highlighted);
+  if(codes.length) {
+    loadStyle('highlight');loadScript('highlight').then(()=>{
+      if(!highlightObserver) highlightObserver=new IntersectionObserver(entries=>{
+        for(const entry of entries) if(entry.isIntersecting) {
+          highlightObserver.unobserve(entry.target);
+          if(entry.target.isConnected && !entry.target.dataset.highlighted) try{hljs.highlightElement(entry.target);}catch{}
+        }
+      },{rootMargin:'300px'});
+      codes.filter(code=>code.isConnected).forEach(code=>highlightObserver.observe(code));
+    }).catch(()=>{});
+  }
+  const maths=[...root.querySelectorAll('.math-inline,.math-display')].filter(el=>!el.readerMath);
+  if(maths.length) {
+    loadStyle('katex');loadScript('katex').then(()=>{
+      const anchor=captureAnchor();
+      for(const el of maths) if(el.isConnected && !el.readerMath) {
+        try{katex.render(el.textContent,el,{displayMode:el.classList.contains('math-display'),throwOnError:false,trust:false,strict:'error',maxExpand:1000});el.readerMath=true;}catch{}
+      }
+      restoreAnchor(anchor);
+    }).catch(()=>{});
   }
 }
 window.readerSetDocument = async function(html, reset = false) {
-  dismissViewer();
-  const current = ++revision, began = performance.now(), scroll = scrollY;
-  observer?.disconnect();
-  highlightObserver?.disconnect();
-  // Rust already sanitizes; repeat here to keep future callers from introducing executable HTML.
-  if (html !== null) root.innerHTML = DOMPurify.sanitize(html, {FORBID_TAGS:['style','script','iframe','object','form','input'], FORBID_ATTR:['style','id','name']});
-  root.querySelectorAll('img').forEach(img => { img.loading='lazy'; img.decoding='async'; });
-  scrollSync.indexDocument(reset);
-  const slugs = new Map();
-  root.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach((h,i) => {
-    h.dataset.headingIndex=i;
+  const current=++revision,began=performance.now();
+  if(html!==null) {
+    const template=document.createElement('template');
+    template.innerHTML=DOMPurify.sanitize(html,{FORBID_TAGS:['style','script','iframe','object','form','input'],FORBID_ATTR:['style','id','name']});
+    reconcileDocument(template.content,reset);
+  } else documentBlocks().forEach(block=>block.readerHTML=block.innerHTML);
+  root.querySelectorAll('img').forEach(img=>{if(img.loading!=='lazy')img.loading='lazy';if(img.decoding!=='async')img.decoding='async';});
+  const slugs=new Map();
+  root.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach((h,i)=>{
+    if(h.dataset.headingIndex!==String(i)) h.dataset.headingIndex=i;
     const slug=h.textContent.trim().toLowerCase().replace(/[^\p{L}\p{N}_\-\s]/gu,'').replace(/\s+/g,'-');
-    const count=slugs.get(slug)||0;slugs.set(slug,count+1);h.id=count?`${slug}-${count}`:slug;
+    const count=slugs.get(slug)||0;slugs.set(slug,count+1);const id=count?`${slug}-${count}`:slug;if(h.id!==id)h.id=id;
   });
-  observer = new IntersectionObserver(entries => {
-    for(const entry of entries) if(entry.isIntersecting) { observer.unobserve(entry.target); const {code,index} = entry.target.readerDiagram;
-      diagramQueue = diagramQueue.catch(()=>{}).then(()=>renderDiagram(entry.target,code,index,current));
-    }
-  }, {rootMargin:'300px'});
-  root.querySelectorAll('pre > code.language-mermaid').forEach((code,index) => {
-    const box=document.createElement('section'); box.className='diagram'; box.readerDiagram={code:code.textContent,index}; box.textContent='Mermaid · waiting to render'; code.parentElement.replaceWith(box); observer.observe(box);
-  });
-  if(root.querySelector('pre > code:not(.language-mermaid)')) {
-    loadStyle('highlight'); loadScript('highlight').then(()=>{ if(revision===current) {
-      highlightObserver = new IntersectionObserver(entries=>{for(const entry of entries) if(entry.isIntersecting) {
-        highlightObserver.unobserve(entry.target); if(revision===current) try{hljs.highlightElement(entry.target);}catch{}
-      }}, {rootMargin:'300px'});
-      root.querySelectorAll('pre > code').forEach(code=>highlightObserver.observe(code));
-    }}).catch(()=>{});
-  }
-  if(root.querySelector('.math-inline,.math-display')) {
-    loadStyle('katex'); loadScript('katex').then(()=>{if(revision===current) root.querySelectorAll('.math-inline,.math-display').forEach(el=>{
-      try{katex.render(el.textContent,el,{displayMode:el.classList.contains('math-display'),throwOnError:false,trust:false,strict:'error',maxExpand:1000});}catch{}
-    });}).catch(()=>{});
-  }
-  scrollTo(0,reset?0:scroll);
-  outlineFollow.indexDocument();
+  enhanceDocument();
+  if(reset) scrollTo(0,0);
+  scrollSync.indexDocument(reset);outlineFollow.indexDocument();
+  // Search ranges must be rebuilt against changed text, without clearing ordinary selections.
+  if(state.query) appliedSearch=-1;
   applyState();
-  requestAnimationFrame(()=>requestAnimationFrame(()=>{if(revision===current) notify('document-readable',{ms:performance.now()-began, revision:current});}));
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{if(revision===current)notify('document-readable',{ms:performance.now()-began,revision:current});}));
 };
 window.readerNavigate = (heading) => {
   scrollSync.previewIntent();
@@ -169,11 +322,7 @@ window.readerConfigure = next => {
     element.dataset.dark = String(next.theme.dark);
     element.style.colorScheme = next.theme.dark ? 'dark' : 'light';
     for (const [name, value] of Object.entries(next.theme.colors)) element.style.setProperty(`--${name}`, value);
-    if (themeChanged) root.querySelectorAll('.diagram').forEach(box => {
-      if (!box.readerDiagram) return;
-      box.textContent = 'Mermaid · waiting to render';
-      observer?.observe(box);
-    });
+    if (themeChanged) enhanceDocument();
   }
   outlineFollow.configure(state.outline);
   applyState();
@@ -253,6 +402,7 @@ function showViewer(content, width, height, {diagram=false, opener, restore=()=>
     opener?.focus({preventScroll:true}); scrollTo(documentScroll.x,documentScroll.y);
   };
   dialog.readerClose=close;
+  dialog.readerOwner=opener?.closest('.source-block');
   button('Close',close,tools); tools.append(label);
   stage.addEventListener('pointerdown',e=>{
     if(e.button!==0 || !stage.classList.contains('pan')) return;

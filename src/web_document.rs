@@ -19,6 +19,7 @@ const MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
 pub struct Resources {
     pub appearance: Appearance,
     generation: u64,
+    document: Option<PathBuf>,
     images: HashMap<String, (PathBuf, PathBuf)>,
     links: HashMap<String, PathBuf>,
     html: String,
@@ -34,8 +35,20 @@ impl Resources {
 
     pub fn render(&mut self, source: &str, document: Option<&Path>) -> String {
         self.generation = self.generation.wrapping_add(1);
-        self.images.clear();
-        self.links.clear();
+        // Keep tokens only for resources referenced by consecutive snapshots of the same
+        // document. Reused DOM keeps working; removed resources and old documents expire.
+        let same_document = self.document.as_deref() == document;
+        self.document = document.map(Path::to_path_buf);
+        let mut image_tokens: HashMap<_, _> = std::mem::take(&mut self.images)
+            .into_iter()
+            .filter(|_| same_document)
+            .map(|(uri, resource)| (resource, uri))
+            .collect();
+        let mut link_tokens: HashMap<_, _> = std::mem::take(&mut self.links)
+            .into_iter()
+            .filter(|_| same_document)
+            .map(|(uri, path)| (path, uri))
+            .collect();
         let root = document
             .and_then(Path::parent)
             .and_then(|p| p.canonicalize().ok());
@@ -73,7 +86,9 @@ impl Resources {
                         .as_ref()
                         .and_then(|root| local_document(root, &dest_url))
                         .map(|path| {
-                            let uri = format!("/link/{}/{}", self.generation, self.links.len());
+                            let uri = link_tokens.entry(path.clone()).or_insert_with(|| {
+                                format!("/link/{}/{}", self.generation, self.links.len())
+                            }).clone();
                             self.links.insert(uri.clone(), path);
                             uri
                         })
@@ -95,9 +110,12 @@ impl Resources {
                         .as_ref()
                         .and_then(|root| local_image(root, &dest_url))
                         .map(|path| {
-                            let uri = format!("/image/{}/{}", self.generation, self.images.len());
+                            let resource = (root.as_ref().unwrap().clone(), path);
+                            let uri = image_tokens.entry(resource.clone()).or_insert_with(|| {
+                                format!("/image/{}/{}", self.generation, self.images.len())
+                            }).clone();
                             self.images
-                                .insert(uri.clone(), (root.as_ref().unwrap().clone(), path));
+                                .insert(uri.clone(), resource);
                             uri
                         })
                         .unwrap_or_default();
@@ -368,12 +386,38 @@ mod tests {
         assert_eq!(resources.read().unwrap().image_count(), 1);
         assert_eq!(respond(&resources, "/image/1/0").status(), 200);
         assert!(resources.read().unwrap().link_target("/link/1/0").is_some());
+        let updated = resources.write().unwrap().render(
+            "Inserted paragraph.\n\n![local](picture%20space.svg) [next](next.md)",
+            Some(&document),
+        );
+        assert!(updated.contains("/image/1/0"));
+        assert!(updated.contains("/link/1/0"));
+        assert_eq!(respond(&resources, "/image/1/0").status(), 200);
         resources
             .write()
             .unwrap()
             .render("# Different document", Some(&document));
         assert_eq!(respond(&resources, "/image/1/0").status(), 404);
         assert!(resources.read().unwrap().link_target("/link/1/0").is_none());
+        let reopened = resources.write().unwrap().render(
+            "![local](picture%20space.svg) [next](next.md)",
+            Some(&document),
+        );
+        assert!(
+            !reopened.contains("/image/1/0"),
+            "removed tokens must not revive"
+        );
+        assert!(!reopened.contains("/link/1/0"));
+        let other_document = folder.path().join("other.md");
+        let switched = resources.write().unwrap().render(
+            "![local](picture%20space.svg) [next](next.md)",
+            Some(&other_document),
+        );
+        assert!(
+            !switched.contains("/image/4/0"),
+            "document switches must expire tokens"
+        );
+        assert_eq!(respond(&resources, "/image/4/0").status(), 404);
     }
 
     #[test]

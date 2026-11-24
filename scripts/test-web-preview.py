@@ -88,7 +88,7 @@ Text after broken Mermaid.
 ''', encoding='utf-8')
     (Path(directory)/'local.svg').write_text('<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="120" height="60" fill="teal"/></svg>', encoding='utf-8')
     original = fixture.read_bytes()
-    env = dict(os.environ, APPDATA=str(Path(directory)/'appdata'), NATIVE_MARKDOWN_WEB_PROFILE=str(Path(directory)/'profile'), NATIVE_MARKDOWN_WEB_TEST_ARGS=f'--remote-debugging-port={port}')
+    env = dict(os.environ, APPDATA=str(Path(directory)/'appdata'), TEMP=directory, TMP=directory, NATIVE_MARKDOWN_WEB_PROFILE=str(Path(directory)/'profile'), NATIVE_MARKDOWN_WEB_TEST_ARGS=f'--remote-debugging-port={port}')
     log_path = repo/f'tmp/web-preview-test-{time.time_ns()}.log'
     log = open(log_path, 'w', encoding='utf-8')
     process = subprocess.Popen([str(Path(args.binary).resolve()), str(fixture)], env=env, stdout=log, stderr=log)
@@ -254,7 +254,11 @@ Text after broken Mermaid.
                 assert page.locator('pre code.hljs').first.evaluate('(e)=>getComputedStyle(e).backgroundColor') == 'rgba(0, 0, 0, 0)'
             page.screenshot(path=str(repo/'tmp/web-preview-themes.png'))
             first.get_by_role('button',name='Expand',exact=True).click()
+            page.evaluate('window.expandedDrawing=document.querySelector("dialog svg")')
             page.evaluate('readerReload(false)')
+            page.wait_for_function('()=>!loading')
+            assert page.evaluate('expandedDrawing===document.querySelector("dialog svg")'), 'Unchanged refresh must keep the expanded viewer'
+            page.keyboard.press('Escape')
             page.wait_for_selector('dialog[open]',state='detached')
             first.scroll_into_view_if_needed()
             page.wait_for_selector('.diagram svg text')
@@ -263,13 +267,14 @@ Text after broken Mermaid.
             assert first.locator('svg').count() == 1
 
             if not args.poc:
-                # Drive the real shortcut bridge: saving preserves the original Markdown byte-for-byte.
+                # An unchanged save reaches the host but must not rewrite the document.
                 before=fixture.stat().st_mtime_ns
                 page.keyboard.press('Control+s')
                 for _ in range(30):
-                    if fixture.stat().st_mtime_ns != before: break
+                    if '"kind":"shortcut","key":"s"' in log_path.read_text(encoding='utf-8'): break
                     time.sleep(.1)
-                assert fixture.stat().st_mtime_ns != before, 'Ctrl+S must reach the Rust atomic-save path'
+                assert '"kind":"shortcut","key":"s"' in log_path.read_text(encoding='utf-8'), 'Ctrl+S must reach the Rust receiver'
+                assert fixture.stat().st_mtime_ns == before, 'Unchanged Ctrl+S must skip disk writes'
                 assert fixture.read_bytes() == original
                 width=page.evaluate('innerWidth')
                 page.keyboard.press('Control+2')
