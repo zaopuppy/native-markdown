@@ -6,7 +6,7 @@ use crate::source_search::SourceSearch;
 use gpui::{
     actions, div, prelude::*, px, rgb, AnyElement, App, AppContext, Context, Entity, ExternalPaths,
     FocusHandle, Focusable, IntoElement, KeyBinding, PromptButton, PromptLevel, Render,
-    ScrollEvent, SharedString, Subscription, Window,
+    ScrollEvent, ScrollHandle, SharedString, Subscription, Window,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Editor, EditorState, Escape, Input, InputEvent, InputState};
@@ -238,6 +238,7 @@ pub struct NativeMarkdownApp {
     selected_heading: Option<usize>,
     // None means no observation yet; Some(None) is the introduction before any heading.
     reading_heading: Option<Option<usize>>,
+    outline_scroll: ScrollHandle,
     outline_revision: u64,
     outline_mode: OutlineMode,
     outline_jump_request: u64,
@@ -565,6 +566,10 @@ impl NativeMarkdownApp {
             return false;
         }
         self.reading_heading = Some(heading);
+        // The toolbar and Full document row precede the heading rows. The default
+        // strategy moves only enough to reveal an offscreen row, without taking focus.
+        self.outline_scroll
+            .scroll_to_item(heading.map_or(1, |index| index + 2));
         true
     }
 
@@ -955,6 +960,7 @@ impl NativeMarkdownApp {
             focused_section: None,
             selected_heading: None,
             reading_heading: None,
+            outline_scroll: ScrollHandle::new(),
             outline_revision: 0,
             outline_mode: OutlineMode::Jump,
             outline_jump_request: 0,
@@ -2613,7 +2619,10 @@ impl NativeMarkdownApp {
             .min_w_0()
             .h_full()
             .flex_none()
-            .overflow_y_scrollbar()
+            .id("outline-scroll")
+            .relative()
+            .overflow_y_scroll()
+            .track_scroll(&self.outline_scroll)
             .p_2()
             .text_sm()
             .gap_1()
@@ -2743,7 +2752,7 @@ impl NativeMarkdownApp {
                     .child("This document has no headings"),
             );
         }
-        panel
+        panel.vertical_scrollbar(&self.outline_scroll)
     }
 
     fn preview_source(&self) -> (SharedString, usize) {
@@ -3302,6 +3311,78 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[gpui::test]
+    #[cfg(windows)]
+    fn outline_follow_reveals_only_offscreen_headings(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let (app, cx) = cx.add_window_view(|window, cx| NativeMarkdownApp::new(None, window, cx));
+        cx.simulate_resize(size(px(1180.0), px(780.0)));
+        app.update(cx, |app, cx| {
+            app.document.content = (0..90)
+                .map(|index| format!("## Heading {index}\n\nBody.\n\n"))
+                .collect();
+            app.refresh_analysis();
+            cx.notify();
+        });
+        draw_app(cx);
+        let assert_visible = |app: &NativeMarkdownApp, heading: usize| {
+            let viewport = app.outline_scroll.bounds();
+            let row = app.outline_scroll.bounds_for_item(heading + 2).unwrap();
+            let offset = app.outline_scroll.offset().y;
+            assert!(
+                row.top() + offset >= viewport.top(),
+                "heading above viewport"
+            );
+            assert!(
+                row.bottom() + offset <= viewport.bottom(),
+                "heading below viewport"
+            );
+        };
+        let follow = |heading, cx: &mut gpui::VisualTestContext| {
+            app.update(cx, |app, cx| {
+                let navigation = app.outline_jump_request;
+                assert!(app.apply_outline_position(
+                    Some(heading),
+                    0,
+                    app.document.content.len(),
+                    app.outline_revision
+                ));
+                assert_eq!(app.outline_jump_request, navigation);
+                cx.notify();
+            });
+            draw_app(cx);
+        };
+        follow(79, cx);
+        app.read_with(cx, |app, _| assert_visible(app, 79));
+        follow(2, cx);
+        app.read_with(cx, |app, _| assert_visible(app, 2));
+        let offset = app.read_with(cx, |app, _| app.outline_scroll.offset());
+        follow(3, cx);
+        app.read_with(cx, |app, _| {
+            assert_visible(app, 3);
+            assert_eq!(
+                app.outline_scroll.offset(),
+                offset,
+                "visible rows must not shift the sidebar"
+            );
+        });
+        // Browsing the outline manually must not be undone by duplicate reports.
+        app.update(cx, |app, cx| {
+            app.outline_scroll.set_offset(point(px(0.0), px(-400.0)));
+            assert!(!app.apply_outline_position(
+                Some(3),
+                0,
+                app.document.content.len(),
+                app.outline_revision
+            ));
+            cx.notify();
+        });
+        draw_app(cx);
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.outline_scroll.offset().y, px(-400.0))
+        });
     }
 
     #[gpui::test]
