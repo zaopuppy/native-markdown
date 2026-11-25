@@ -15,6 +15,7 @@ mod native_menu;
 mod recent;
 mod scroll_sync;
 mod search_ui;
+mod sidebar_hint;
 mod source_search;
 #[cfg(windows)]
 mod web_document;

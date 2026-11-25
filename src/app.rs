@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use crate::sidebar_hint::{self, HintBounds};
 use crate::source_search::SourceSearch;
 use gpui::{
     actions, div, prelude::*, px, rgb, AnyElement, App, AppContext, Context, Entity, ExternalPaths,
@@ -19,7 +20,9 @@ use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::tooltip::Tooltip;
 #[cfg(test)]
 use gpui_component::Theme;
-use gpui_component::{Disableable as _, Icon, Selectable as _, Sizable as _, StyledExt as _};
+use gpui_component::{
+    Disableable as _, ElementExt as _, Icon, Selectable as _, Sizable as _, StyledExt as _,
+};
 use rfd::AsyncFileDialog;
 
 use crate::appearance::{Appearance, Palette};
@@ -227,6 +230,7 @@ pub struct NativeMarkdownApp {
     file_tree_open: bool,
     outline_open: bool,
     file_tree_width: f32,
+    file_tree_hint_bounds: HintBounds,
     outline_width: f32,
     file_tree_narrow_reveal: bool,
     outline_narrow_reveal: bool,
@@ -1006,6 +1010,7 @@ impl NativeMarkdownApp {
             file_tree_open: layout.file_tree_open,
             outline_open: layout.outline_open,
             file_tree_width: layout.file_tree_width,
+            file_tree_hint_bounds: HintBounds::default(),
             outline_width: layout.outline_width,
             file_tree_narrow_reveal: false,
             outline_narrow_reveal: false,
@@ -2289,7 +2294,7 @@ impl NativeMarkdownApp {
             )
     }
 
-    fn file_tree_header(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn file_tree_header(&mut self, hint_bounds: HintBounds, cx: &mut Context<Self>) -> AnyElement {
         let root = self.file_tree.root().map(Path::to_path_buf);
         let root_title = root
             .as_deref()
@@ -2302,6 +2307,7 @@ impl NativeMarkdownApp {
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "Save or open a document to show its folder".to_owned());
         let root_tooltip = full_path.clone();
+        let root_hint_bounds = hint_bounds.clone();
         let can_go_up = root.as_deref().and_then(Path::parent).is_some();
         let has_document_path = self.document.path.is_some();
         let active_not_shown = self.document.path.as_deref().is_some_and(|active| {
@@ -2329,7 +2335,7 @@ impl NativeMarkdownApp {
                             .font_semibold()
                             .child(root_title)
                             .tooltip(move |window, cx| {
-                                Tooltip::new(root_tooltip.clone()).build(window, cx)
+                                sidebar_hint::build(root_tooltip.clone(), root_hint_bounds.clone(), window, cx)
                             }),
                     )
                     .child(
@@ -2339,7 +2345,6 @@ impl NativeMarkdownApp {
                             .small()
                             .ghost()
                             .disabled(root.is_none())
-                            .tooltip("打开当前文件夹并定位当前文件（文件资源管理器）")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 if let Some(root) = this.file_tree.root() {
                                     if let Some(path) = this.document.path.as_deref()
@@ -2350,7 +2355,8 @@ impl NativeMarkdownApp {
                                         cx.open_with_system(root);
                                     }
                                 }
-                            })),
+                            }))
+                            .map(|button| sidebar_hint::trigger(button, "打开当前文件夹并定位当前文件（文件资源管理器）", hint_bounds.clone())),
                     )
                     .child(
                         Button::new("close-file-tree")
@@ -2358,13 +2364,13 @@ impl NativeMarkdownApp {
                             .accessibility_label("Close File Tree")
                             .small()
                             .ghost()
-                            .tooltip("Close file tree")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.file_tree_open = false;
                                 this.file_tree_narrow_reveal = false;
                                 this.persist_layout();
                                 cx.notify();
-                            })),
+                            }))
+                            .map(|button| sidebar_hint::trigger(button, "Close file tree", hint_bounds.clone())),
                     ),
             )
             .child(
@@ -2378,8 +2384,8 @@ impl NativeMarkdownApp {
                             .small()
                             .ghost()
                             .disabled(!can_go_up)
-                            .tooltip("Use the parent folder as root")
-                            .on_click(cx.listener(|this, _, window, cx| this.tree_up(window, cx))),
+                            .on_click(cx.listener(|this, _, window, cx| this.tree_up(window, cx)))
+                            .map(|button| sidebar_hint::trigger(button, "Use the parent folder as root", hint_bounds.clone())),
                     )
                     .child(
                         Button::new("tree-document-root")
@@ -2388,10 +2394,10 @@ impl NativeMarkdownApp {
                             .small()
                             .ghost()
                             .disabled(!has_document_path)
-                            .tooltip("Use the current document folder as root")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.reset_tree_to_document(window, cx)
-                            })),
+                            }))
+                            .map(|button| sidebar_hint::trigger(button, "Use the current document folder as root", hint_bounds.clone())),
                     )
                     .child(
                         Button::new("tree-refresh")
@@ -2410,19 +2416,18 @@ impl NativeMarkdownApp {
                             .accessibility_label("Tree Choose Root")
                             .small()
                             .ghost()
-                            .tooltip("Choose a folder as root")
                             .on_click(
                                 cx.listener(|this, _, window, cx| {
                                     this.choose_tree_root(window, cx)
                                 }),
-                            ),
+                            )
+                            .map(|button| sidebar_hint::trigger(button, "Choose a folder as root", hint_bounds.clone())),
                     )
                     .child(
                         self.state_button(
                             Button::new("tree-show-hidden").label("Hidden").small(),
                             self.file_tree.show_hidden(),
                         )
-                        .tooltip("Show hidden, system, and heavy folders")
                         .on_click(cx.listener(|this, _, window, cx| {
                             let show = !this.file_tree.show_hidden();
                             let paths = this.file_tree.set_show_hidden(show);
@@ -2430,7 +2435,8 @@ impl NativeMarkdownApp {
                                 this.load_tree_directory(path, window, cx);
                             }
                             cx.notify();
-                        })),
+                        }))
+                        .map(|button| sidebar_hint::trigger(button, "Show hidden, system, and heavy folders", hint_bounds.clone())),
                     ),
             )
             .when(active_not_shown, |view| {
@@ -2445,7 +2451,12 @@ impl NativeMarkdownApp {
         header.into_any_element()
     }
 
-    fn file_tree_body(&mut self, root_id: u64, cx: &mut Context<Self>) -> AnyElement {
+    fn file_tree_body(
+        &mut self,
+        root_id: u64,
+        hint_bounds: HintBounds,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let has_root = self.file_tree.root().is_some();
         let mut body = div()
             .id(("file-tree-scroll", root_id))
@@ -2509,6 +2520,7 @@ impl NativeMarkdownApp {
                         }.size_5();
                         let click_path = path.clone();
                         let path_tooltip = path.display().to_string();
+                        let path_hint_bounds = hint_bounds.clone();
                         let focus = self.file_tree_focus.clone();
                         let row_element = div()
                             .id(("file-tree-row", row_index))
@@ -2551,7 +2563,12 @@ impl NativeMarkdownApp {
                             .child(div().size(px(20.0)).flex_none().child(entry_icon))
                             .child(div().min_w_0().truncate().child(entry.name.clone()))
                             .tooltip(move |window, cx| {
-                                Tooltip::new(path_tooltip.clone()).build(window, cx)
+                                sidebar_hint::build(
+                                    path_tooltip.clone(),
+                                    path_hint_bounds.clone(),
+                                    window,
+                                    cx,
+                                )
                             })
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 focus.focus(window, cx);
@@ -2680,10 +2697,12 @@ impl NativeMarkdownApp {
         let mut root_hasher = std::collections::hash_map::DefaultHasher::new();
         self.file_tree.root().hash(&mut root_hasher);
         let root_id = root_hasher.finish();
-        let header = self.file_tree_header(cx);
-        let body = self.file_tree_body(root_id, cx);
+        let hint_bounds = self.file_tree_hint_bounds.clone();
+        let header = self.file_tree_header(hint_bounds.clone(), cx);
+        let body = self.file_tree_body(root_id, hint_bounds.clone(), cx);
         div()
             .debug_selector(|| "file-tree-panel".into())
+            .on_prepaint(move |bounds, _, _| hint_bounds.set(bounds))
             .key_context(FILE_TREE_CONTEXT)
             .track_focus(&self.file_tree_focus)
             .on_action(cx.listener(|this, _: &FileTreeUp, _, cx| this.move_tree_selection(-1, cx)))
