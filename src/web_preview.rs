@@ -158,9 +158,23 @@ impl WebPreview {
                 let _ = self.view.set_background_color(background_color(appearance));
             }
         }
+        let dialect = if settings["markdownDialect"].as_str() == Some("commonmark") {
+            crate::markdown::Dialect::CommonMark
+        } else {
+            crate::markdown::Dialect::GitHub
+        };
+        let preserve_line_breaks = settings["preserveLineBreaks"].as_bool().unwrap_or(false);
+        let changed_markdown = {
+            let mut resources = self.resources.write().unwrap();
+            let changed = resources.dialect != dialect
+                || resources.preserve_line_breaks != preserve_line_breaks;
+            resources.dialect = dialect;
+            resources.preserve_line_breaks = preserve_line_breaks;
+            changed
+        };
         let changed_document = self.document.as_deref() != document;
         let changed_scope = self.scope != scope;
-        if self.source != source || changed_document || changed_scope {
+        if self.source != source || changed_document || changed_scope || changed_markdown {
             self.resources.write().unwrap().render(&source, document);
             self.source = source;
             self.document = document.map(Path::to_path_buf);

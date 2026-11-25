@@ -22,20 +22,46 @@ pub struct SearchHit {
     pub source_end: usize,
 }
 
-pub fn parser_options() -> Options {
-    Options::ENABLE_TABLES
-        | Options::ENABLE_FOOTNOTES
-        | Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_TASKLISTS
-        | Options::ENABLE_GFM
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Dialect {
+    #[default]
+    GitHub,
+    CommonMark,
+}
+
+impl Dialect {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::GitHub => "github",
+            Self::CommonMark => "commonmark",
+        }
+    }
+
+    pub fn options(self) -> Options {
+        match self {
+            Self::CommonMark => Options::empty(),
+            Self::GitHub => {
+                Options::ENABLE_TABLES
+                    | Options::ENABLE_FOOTNOTES
+                    | Options::ENABLE_STRIKETHROUGH
+                    | Options::ENABLE_TASKLISTS
+                    | Options::ENABLE_GFM
+            }
+        }
+    }
 }
 
 /// Top-level source blocks, shared by the editor's in-memory scroll map and HTML projection.
+#[cfg(test)]
 pub fn source_blocks(markdown: &str) -> Vec<Range<usize>> {
+    source_blocks_with_dialect(markdown, Dialect::default())
+}
+
+pub fn source_blocks_with_dialect(markdown: &str, dialect: Dialect) -> Vec<Range<usize>> {
     let mut depth = 0usize;
     let mut blocks = Vec::new();
     for (event, range) in
-        Parser::new_ext(markdown, parser_options() | Options::ENABLE_MATH).into_offset_iter()
+        Parser::new_ext(markdown, dialect.options() | Options::ENABLE_MATH).into_offset_iter()
     {
         if depth == 0 && !matches!(event, Event::End(_)) {
             blocks.push(range);
@@ -49,11 +75,16 @@ pub fn source_blocks(markdown: &str) -> Vec<Range<usize>> {
     blocks
 }
 
+#[cfg(test)]
 pub fn headings(markdown: &str) -> Vec<Heading> {
+    headings_with_dialect(markdown, Dialect::default())
+}
+
+pub fn headings_with_dialect(markdown: &str, dialect: Dialect) -> Vec<Heading> {
     let mut result = Vec::new();
     let mut current: Option<(u8, usize, String)> = None;
 
-    for (event, range) in Parser::new_ext(markdown, parser_options()).into_offset_iter() {
+    for (event, range) in Parser::new_ext(markdown, dialect.options()).into_offset_iter() {
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
                 current = Some((heading_level(level), range.start, String::new()));
@@ -128,14 +159,19 @@ pub fn focus_range(
     Some(heading.offset..end)
 }
 
-fn reading_text(markdown: &str) -> String {
-    plain_text_with_mermaid(markdown, false)
+fn reading_text(markdown: &str, dialect: Dialect) -> String {
+    plain_text_with_dialect(markdown, false, dialect)
 }
 
+#[cfg(test)]
 fn plain_text_with_mermaid(markdown: &str, include_mermaid: bool) -> String {
+    plain_text_with_dialect(markdown, include_mermaid, Dialect::default())
+}
+
+fn plain_text_with_dialect(markdown: &str, include_mermaid: bool, dialect: Dialect) -> String {
     let mut output = String::new();
     let mut in_mermaid = false;
-    for event in Parser::new_ext(markdown, parser_options()) {
+    for event in Parser::new_ext(markdown, dialect.options()) {
         match event {
             Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) => {
                 in_mermaid = info.trim().eq_ignore_ascii_case("mermaid");
@@ -156,15 +192,30 @@ fn plain_text_with_mermaid(markdown: &str, include_mermaid: bool) -> String {
     output
 }
 
+#[cfg(test)]
 pub fn word_count(markdown: &str) -> usize {
-    reading_text(markdown).split_whitespace().count()
+    word_count_with_dialect(markdown, Dialect::default())
+}
+
+pub fn word_count_with_dialect(markdown: &str, dialect: Dialect) -> usize {
+    reading_text(markdown, dialect).split_whitespace().count()
 }
 
 pub fn reading_minutes(words: usize) -> usize {
     words.max(1).div_ceil(220)
 }
 
+#[cfg(test)]
 pub fn search(markdown: &str, query: &str, headings: &[Heading]) -> Vec<SearchHit> {
+    search_with_dialect(markdown, query, headings, Dialect::default())
+}
+
+pub fn search_with_dialect(
+    markdown: &str,
+    query: &str,
+    headings: &[Heading],
+    dialect: Dialect,
+) -> Vec<SearchHit> {
     let mut hits = Vec::new();
     if query.trim().is_empty() {
         return hits;
@@ -191,7 +242,7 @@ pub fn search(markdown: &str, query: &str, headings: &[Heading]) -> Vec<SearchHi
             text.clear();
             positions.clear();
         };
-    for (event, source_range) in Parser::new_ext(markdown, parser_options()).into_offset_iter() {
+    for (event, source_range) in Parser::new_ext(markdown, dialect.options()).into_offset_iter() {
         match event {
             Event::Start(Tag::Image { .. }) => {
                 flush(&mut text, &mut positions, &mut hits);

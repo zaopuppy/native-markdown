@@ -15,6 +15,7 @@ pub struct Position {
 struct State {
     enabled: bool,
     source: SharedString,
+    dialect: crate::markdown::Dialect,
     blocks: Vec<Range<usize>>,
     scope: Range<usize>,
     revision: u64,
@@ -28,12 +29,24 @@ struct State {
 pub struct ScrollSync(Rc<RefCell<State>>);
 
 impl ScrollSync {
+    #[cfg(test)]
     pub fn configure(&self, enabled: bool, source: SharedString, scope: Range<usize>) {
+        self.configure_with_dialect(enabled, source, scope, crate::markdown::Dialect::default());
+    }
+
+    pub fn configure_with_dialect(
+        &self,
+        enabled: bool,
+        source: SharedString,
+        scope: Range<usize>,
+        dialect: crate::markdown::Dialect,
+    ) {
         let mut state = self.0.borrow_mut();
-        let source_changed = state.source != source;
+        let source_changed = state.source != source || state.dialect != dialect;
         if source_changed {
-            state.blocks = crate::markdown::source_blocks(&source);
+            state.blocks = crate::markdown::source_blocks_with_dialect(&source, dialect);
             state.source = source;
+            state.dialect = dialect;
             state.revision = state.revision.wrapping_add(1);
             state.pending = None;
             state.following_preview = false;

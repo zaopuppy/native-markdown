@@ -203,6 +203,8 @@ pub struct NativeMarkdownApp {
     #[cfg(windows)]
     web_starting: bool,
     appearance: Appearance,
+    markdown_dialect: markdown::Dialect,
+    preserve_line_breaks: bool,
     reading_width: u16,
     reading_width_follows_zoom: bool,
     settings_open: bool,
@@ -325,6 +327,47 @@ impl NativeMarkdownApp {
                     .text_color(rgb(p.muted))
                     .child("默认 1 秒。当前仅本次运行生效。"),
             )
+    }
+
+    fn set_markdown_settings(
+        &mut self,
+        dialect: markdown::Dialect,
+        preserve_line_breaks: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.markdown_dialect == dialect && self.preserve_line_breaks == preserve_line_breaks {
+            return;
+        }
+        self.markdown_dialect = dialect;
+        self.preserve_line_breaks = preserve_line_breaks;
+        self.refresh_analysis();
+        cx.notify();
+    }
+
+    fn markdown_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div().v_flex().gap_3().mt_3()
+            .child(div().font_semibold().child("Markdown · 方言与换行"))
+            .child(div().h_flex().gap_2().children([
+                (markdown::Dialect::GitHub, "GitHub (GFM)"),
+                (markdown::Dialect::CommonMark, "CommonMark"),
+            ].into_iter().map(|(dialect, label)| {
+                Button::new(("markdown-dialect", dialect as usize)).label(label).small()
+                    .selected(self.markdown_dialect == dialect)
+                    .debug_selector(move || format!("markdown-dialect-{}", dialect.id()))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_markdown_settings(dialect, this.preserve_line_breaks, cx);
+                    }))
+            })))
+            .child(Button::new("markdown-preserve-line-breaks").label("保留普通换行")
+                .selected(self.preserve_line_breaks)
+                .debug_selector(|| "markdown-preserve-line-breaks".into())
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.set_markdown_settings(this.markdown_dialect, !this.preserve_line_breaks, cx);
+                })))
+            .child(div().text_xs().text_color(rgb(self.palette().muted))
+                .child("默认 GFM；普通回车按段落合并。开启保留换行后，普通回车也会显示为换行。"))
+            .child(div().text_xs().text_color(rgb(self.palette().muted))
+                .child("GFM 提供表格、任务列表、删除线和脚注；两种模式均保留公式与 Mermaid。仅本次运行生效。"))
     }
 
     fn settings_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -471,7 +514,8 @@ impl NativeMarkdownApp {
                                     .text_color(rgb(p.muted))
                                     .child("放大时增加宽度，最多铺满阅读区。当前仅本次运行生效。"),
                             ),
-                    ),
+                    )
+                    .child(self.markdown_settings(cx)),
             )
     }
 
@@ -503,10 +547,11 @@ impl NativeMarkdownApp {
             && self.view_mode == ViewMode::Split
             && self.sync_scroll_enabled
             && self.pending_analysis.is_none();
-        self.scroll_sync.configure(
+        self.scroll_sync.configure_with_dialect(
             sync_enabled,
             self.preview_markdown.clone(),
             offset..offset + source.len(),
+            self.markdown_dialect,
         );
         if self.web_preview.is_none() && !self.web_starting && visible {
             use futures::StreamExt as _;
@@ -558,6 +603,7 @@ impl NativeMarkdownApp {
                 .count();
             let source_end = offset + source.len();
             view.update(source, self.document.path.as_deref(), offset, serde_json::json!({
+                "markdownDialect":self.markdown_dialect.id(), "preserveLineBreaks":self.preserve_line_breaks,
                 "zoom":self.zoom.factor(), "heading":heading, "navigation":self.outline_jump_request,
                 "query":if self.search_open { self.search_query.as_str() } else { "" }, "occurrence":self.active_hit.saturating_sub(preceding), "searchRequest":self.search_request,
                 "theme":self.appearance.reader_settings(),
@@ -956,8 +1002,10 @@ impl NativeMarkdownApp {
         })
         .detach();
 
-        let outline = markdown::headings(&document.content);
-        let word_count = markdown::word_count(&document.content);
+        let outline =
+            markdown::headings_with_dialect(&document.content, markdown::Dialect::default());
+        let word_count =
+            markdown::word_count_with_dialect(&document.content, markdown::Dialect::default());
         let reading_minutes = markdown::reading_minutes(word_count);
         let last_path = document.path.clone().or(initial_path);
         let preview_markdown = SharedString::from(document.content.clone());
@@ -1020,6 +1068,8 @@ impl NativeMarkdownApp {
             preview_markdown,
             pending_analysis: None,
             preview_refresh_delay_ms: 1000,
+            markdown_dialect: markdown::Dialect::default(),
+            preserve_line_breaks: false,
             focused_section: None,
             selected_heading: None,
             reading_heading: None,
@@ -1095,8 +1145,10 @@ impl NativeMarkdownApp {
 
         self.source_search.clear();
         self.preview_markdown = SharedString::from(self.document.content.clone());
-        self.outline = markdown::headings(&self.document.content);
-        self.word_count = markdown::word_count(&self.document.content);
+        self.outline =
+            markdown::headings_with_dialect(&self.document.content, self.markdown_dialect);
+        self.word_count =
+            markdown::word_count_with_dialect(&self.document.content, self.markdown_dialect);
         self.reading_minutes = markdown::reading_minutes(self.word_count);
         self.refresh_search();
         self.focused_section = self.focused_section.filter(|section| {
@@ -1352,8 +1404,12 @@ impl NativeMarkdownApp {
     }
 
     fn refresh_search(&mut self) {
-        self.search_hits =
-            markdown::search(&self.document.content, &self.search_query, &self.outline);
+        self.search_hits = markdown::search_with_dialect(
+            &self.document.content,
+            &self.search_query,
+            &self.outline,
+            self.markdown_dialect,
+        );
         self.active_hit = self
             .active_hit
             .min(self.search_hits.len().saturating_sub(1));
@@ -3368,6 +3424,57 @@ mod tests {
         cx.update(|window, cx| {
             let _ = window.draw(cx);
         });
+    }
+
+    #[gpui::test]
+    fn markdown_controls_refresh_analysis_without_editing_source(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir_in("tmp").unwrap();
+        let path = directory.path().join("dialect.md");
+        let source = "# ~~Title~~\n\n1. aaa\n  -- bbb";
+        std::fs::write(&path, source).unwrap();
+        let mut app = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| NativeMarkdownApp::new(Some(path), window, cx));
+            app = Some(view.clone());
+            gpui_component::Root::new(view, window, cx)
+        });
+        let app = app.unwrap();
+        cx.simulate_resize(size(px(1180.0), px(1400.0)));
+        app.update(cx, |app, cx| {
+            assert_eq!(app.markdown_dialect, markdown::Dialect::GitHub);
+            assert!(!app.preserve_line_breaks);
+            assert_eq!(app.outline[0].title, "Title");
+            app.settings_open = true;
+            cx.notify();
+        });
+        for selector in [
+            "markdown-dialect-commonmark",
+            "markdown-preserve-line-breaks",
+            "markdown-dialect-github",
+        ] {
+            draw_app(cx);
+            let position = cx.debug_bounds(selector).unwrap().center();
+            cx.simulate_mouse_down(position, gpui::MouseButton::Left, Modifiers::default());
+            cx.simulate_mouse_up(position, gpui::MouseButton::Left, Modifiers::default());
+            draw_app(cx);
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.document.content, source);
+                assert!(!app.document.is_dirty());
+                assert_eq!(app.preview_markdown.as_ref(), source);
+                assert!(app.pending_analysis.is_none());
+                if selector == "markdown-dialect-commonmark" {
+                    assert_eq!(app.markdown_dialect, markdown::Dialect::CommonMark);
+                    assert_eq!(app.outline[0].title, "~~Title~~");
+                } else if selector == "markdown-preserve-line-breaks" {
+                    assert!(app.preserve_line_breaks);
+                } else {
+                    assert_eq!(app.markdown_dialect, markdown::Dialect::GitHub);
+                    assert_eq!(app.outline[0].title, "Title");
+                    assert!(app.preserve_line_breaks);
+                }
+            });
+        }
     }
 
     #[gpui::test]

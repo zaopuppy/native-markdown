@@ -18,6 +18,8 @@ const MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
 #[derive(Default)]
 pub struct Resources {
     pub appearance: Appearance,
+    pub dialect: crate::markdown::Dialect,
+    pub preserve_line_breaks: bool,
     generation: u64,
     document: Option<PathBuf>,
     images: HashMap<String, (PathBuf, PathBuf)>,
@@ -52,7 +54,7 @@ impl Resources {
         let root = document
             .and_then(Path::parent)
             .and_then(|p| p.canonicalize().ok());
-        let mut options = crate::markdown::parser_options();
+        let mut options = self.dialect.options();
         options.insert(Options::ENABLE_MATH);
         let mut depth = 0usize;
         let events = Parser::new_ext(source, options).into_offset_iter()
@@ -126,6 +128,7 @@ impl Resources {
                         id,
                     })
                 }
+                Event::SoftBreak if self.preserve_line_breaks => Event::HardBreak,
                 Event::InlineMath(text) => Event::Html(
                     format!("<span class=\"math-inline\">{}</span>", escape(&text)).into(),
                 ),
@@ -330,6 +333,31 @@ pub fn respond(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dialect_and_line_break_settings_change_the_actual_html() {
+        let mut resources = Resources::default();
+        let source =
+            "1. aaa\n  -- bbb\n\n| A | B |\n| --- | --- |\n| x | y |\n\n- [x] Done\n\n~~removed~~";
+        let github = resources.render(source, None);
+        assert!(github.contains("aaa\n-- bbb"), "{github}");
+        assert!(github.contains("<table>"));
+        assert!(github.contains("task-marker"));
+        assert!(github.contains("<del>removed</del>"));
+
+        resources.preserve_line_breaks = true;
+        let preserved = resources.render(source, None);
+        assert!(preserved.contains("aaa<br>\n-- bbb"), "{preserved}");
+        resources.dialect = crate::markdown::Dialect::CommonMark;
+        let commonmark = resources.render(source, None);
+        assert!(!commonmark.contains("<table>"));
+        assert!(!commonmark.contains("task-marker"));
+        assert!(commonmark.contains("~~removed~~"));
+        assert!(commonmark.contains("aaa<br>\n-- bbb"));
+        resources.dialect = crate::markdown::Dialect::GitHub;
+        resources.preserve_line_breaks = false;
+        assert_eq!(resources.render(source, None), github);
+    }
     #[test]
     fn html_blocks_match_editor_utf8_source_ranges() {
         let source = "# 中文\n\nparagraph $x$\n\n- outer\n  - nested\n\n> quote\n\n---\n\n```mermaid\nflowchart LR\nA-->B\n```\n\n$$x^2$$\n\n<table><tr><td>safe</td></tr></table>\n";

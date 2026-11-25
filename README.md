@@ -38,6 +38,8 @@ Press `Ctrl+2` for source and preview side by side. Both panes follow the same M
 
 The preview and outline refresh after you stop typing for **1 second** by default. Choose 0.5, 1, 2, 3, or 5 seconds in Settings; this choice applies to the current run. Each edit restarts the delay; saving always uses your latest text. Scroll sync pauses until the preview catches up. Opening a document or explicitly using Find updates immediately.
 
+Settings offers **GitHub (GFM)** (default) and **CommonMark** parsing. **Preserve ordinary line breaks** optionally displays single newlines as visible breaks; it is off by default, following GFM soft-break rules. Both modes retain math and Mermaid support. These settings apply to the current run.
+
 Preview updates reuse unchanged content blocks, including rendered diagrams, formulas, and code highlighting. An unchanged diagram keeps its zoom and expanded viewer; an edited diagram keeps its previous drawing until the new result is ready.
 
 ![Midnight theme detail: Markdown source beside highlighted Rust code, typeset math, and a task list](docs/screenshots/split-detail.png)

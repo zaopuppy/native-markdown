@@ -298,3 +298,11 @@ python scripts/summarize-rendering.py tmp\webview.json
 - [Tauri 2 进程模型](https://v2.tauri.app/concept/process-model/)、[权限体系](https://v2.tauri.app/security/capabilities/)
 - [Mermaid strict 安全设置](https://mermaid.js.org/config/usage.html)、[KaTeX trust 选项](https://katex.org/docs/options)
 - [早期 PoC DOMPurify 3.3.1 的安全公告](https://github.com/cure53/DOMPurify/security/advisories/GHSA-h8r8-wccr-v5f2)；最终资源已升级，不以旧 PoC 版本交付。
+
+## Markdown 方言与普通换行（2026-11-26）
+
+设置提供 GitHub（GFM，默认）与 CommonMark。GFM 沿用当前 pulldown-cmark 的表格、删除线、任务列表、GFM 与脚注扩展；CommonMark 关闭这些语法扩展。两种模式仍保留应用既有的公式、Mermaid 和 HTML 安全清洗，不承诺复刻 GitHub 网站的全部后处理行为。
+
+“保留普通换行”独立于方言，默认关闭。关闭时普通回车是软换行；开启时仅将解析器产生的 SoftBreak 转为 HardBreak，不改源码，也不更改代码块、空行或列表的结构。例如 `1. aaa\n  -- bbb` 中的 `-- bbb` 仍是普通文字，不变为子列表。
+
+切换立即重新分析目录、搜索与字数，使用同一方言更新预览和源码滚动块映射；即使源码没有变化，也重新生成预览。设置只保存在内存，不新增运行时磁盘写入。默认遵循 [GFM 软换行规则](https://github.github.com/gfm/#soft-line-breaks)。
