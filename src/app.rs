@@ -2967,7 +2967,8 @@ impl NativeMarkdownApp {
         panel.p_5().child(message).into_any_element()
     }
 
-    fn editor_panel(&self) -> impl IntoElement {
+    fn editor_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let zoom = cx.listener(Self::handle_scroll_wheel);
         div()
             .debug_selector(|| "editor-panel".into())
             .relative()
@@ -2984,6 +2985,27 @@ impl NativeMarkdownApp {
                     .appearance(false),
             )
             .child(self.source_search.observer(self.editor.clone()))
+            // The editor consumes wheel events before they bubble to the app root.
+            // Capture only Ctrl+wheel; leave normal scrolling to the editor.
+            .child(
+                gpui::canvas(
+                    |_, _, _| {},
+                    move |bounds, _, window, _| {
+                        window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
+                            if phase.capture()
+                                && bounds.contains(&event.position)
+                                && event.modifiers.control
+                            {
+                                zoom(event, window, cx);
+                            }
+                        });
+                    },
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
             .map(|panel| {
                 #[cfg(windows)]
                 if let Some(preview) = self
@@ -3075,11 +3097,11 @@ impl NativeMarkdownApp {
         } else {
             match self.view_mode {
                 ViewMode::Preview => self.preview_panel().into_any_element(),
-                ViewMode::Source => self.editor_panel().into_any_element(),
+                ViewMode::Source => self.editor_panel(cx).into_any_element(),
                 ViewMode::Split => div()
                     .h_flex()
                     .size_full()
-                    .child(self.editor_panel())
+                    .child(self.editor_panel(cx))
                     .child(div().w(px(1.0)).h_full().bg(rgb(self.palette().border)))
                     .child(self.preview_panel())
                     .into_any_element(),
@@ -4768,6 +4790,76 @@ mod tests {
         draw_app(cx);
         assert_eq!(std::fs::read(&path).unwrap(), expected.as_bytes());
         app.read_with(cx, |app, _| assert!(!app.document.is_dirty()));
+    }
+
+    #[gpui::test]
+    fn ctrl_wheel_over_editor_zooms_without_scrolling_in_source_and_split(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        std::fs::create_dir_all("tmp").unwrap();
+        let directory = tempfile::tempdir_in("tmp").unwrap();
+        let path = directory.path().join("editor-wheel.md");
+        let source = (0..200).map(|i| format!("Line {i}\n")).collect::<String>();
+        std::fs::write(&path, &source).unwrap();
+        let (app, cx) =
+            cx.add_window_view(|window, cx| NativeMarkdownApp::new(Some(path), window, cx));
+        cx.simulate_resize(size(px(1180.), px(780.)));
+        for mode in [ViewMode::Source, ViewMode::Split] {
+            cx.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.set_view_mode(mode, cx);
+                    app.zoom = ZoomLevel::default();
+                    app.editor.update(cx, |editor, cx| {
+                        editor.set_selected_range(0..4, cx);
+                        editor.focus(window, cx);
+                    });
+                })
+            });
+            draw_app(cx);
+            let toolbar = cx.debug_bounds("application-toolbar").unwrap();
+            let (position, offset) = app.read_with(cx, |app, cx| {
+                let editor = app.editor.read(cx);
+                (editor.input_bounds().center(), editor.scroll_offset())
+            });
+            cx.simulate_event(gpui::ScrollEvent {
+                position,
+                delta: gpui::ScrollDelta::Pixels(point(px(0.), px(40.))),
+                modifiers: Modifiers {
+                    control: true,
+                    ..Default::default()
+                },
+                touch_phase: gpui::TouchPhase::Moved,
+                source: gpui::ScrollSource::Pointer,
+            });
+            draw_app(cx);
+            app.read_with(cx, |app, cx| {
+                assert_eq!(
+                    app.zoom.percent(),
+                    110,
+                    "Ctrl+wheel must reach document zoom in {mode:?}"
+                );
+                let editor = app.editor.read(cx);
+                assert_eq!(editor.scroll_offset(), offset, "zoom must not also scroll");
+                assert_eq!(editor.selected_range(), 0..4);
+                assert_eq!(editor.value().as_ref(), source);
+            });
+            assert_eq!(cx.debug_bounds("application-toolbar").unwrap(), toolbar);
+            cx.simulate_event(gpui::ScrollEvent {
+                position,
+                delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-60.))),
+                modifiers: Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+                source: gpui::ScrollSource::Pointer,
+            });
+            draw_app(cx);
+            app.read_with(cx, |app, cx| {
+                assert_eq!(app.zoom.percent(), 110);
+                assert_ne!(
+                    app.editor.read(cx).scroll_offset(),
+                    offset,
+                    "ordinary wheel still scrolls"
+                );
+            });
+        }
     }
 
     #[gpui::test]

@@ -99,7 +99,7 @@ Launch without a path for the welcome screen. Running the app requires no Node r
 | Toggle preview and editing | `Ctrl+E` |
 | Zoom in / out / reset | `Ctrl++` / `Ctrl+-` / `Ctrl+0` |
 
-Use `Ctrl+mouse-wheel` to zoom the document; inside a diagram, it zooms that diagram independently. Leave **Pan** off to select inline diagram text. In the expanded viewer, choose **Select text** to copy labels and press `Esc` to return. Click a local image to open its viewer.
+Use `Ctrl+mouse-wheel` over the source editor or reading pane to zoom the document; inside a diagram, it zooms that diagram independently. Leave **Pan** off to select inline diagram text. In the expanded viewer, choose **Select text** to copy labels and press `Esc` to return. Click a local image to open its viewer.
 
 With the file tree focused, use `Up` / `Down` to move, `Left` / `Right` to collapse or expand, and `Enter` to open a file.
 
