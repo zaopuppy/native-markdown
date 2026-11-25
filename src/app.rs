@@ -235,6 +235,7 @@ pub struct NativeMarkdownApp {
     search_open: bool,
     preview_markdown: SharedString,
     pending_analysis: Option<gpui::Task<()>>,
+    preview_refresh_delay_ms: u64,
     focused_section: Option<usize>,
     selected_heading: Option<usize>,
     // None means no observation yet; Some(None) is the introduction before any heading.
@@ -277,6 +278,49 @@ impl NativeMarkdownApp {
         appearance.apply(cx);
         self.persist_layout();
         cx.notify();
+    }
+
+    fn preview_refresh_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = self.palette();
+        div()
+            .v_flex()
+            .gap_3()
+            .mt_3()
+            .child(div().font_semibold().child("Preview refresh · 预览刷新"))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(rgb(p.muted))
+                    .child("停止输入后等待多久更新预览和目录。"),
+            )
+            .child(
+                div().h_flex().gap_2().flex_wrap().children(
+                    [
+                        (500u64, "0.5 秒"),
+                        (1000, "1 秒"),
+                        (2000, "2 秒"),
+                        (3000, "3 秒"),
+                        (5000, "5 秒"),
+                    ]
+                    .into_iter()
+                    .map(|(delay_ms, label)| {
+                        Button::new(("preview-refresh-delay", delay_ms as usize))
+                            .label(label)
+                            .small()
+                            .selected(self.preview_refresh_delay_ms == delay_ms)
+                            .debug_selector(move || format!("preview-refresh-delay-{delay_ms}"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.set_preview_refresh_delay(delay_ms, cx);
+                            }))
+                    }),
+                ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(p.muted))
+                    .child("默认 1 秒。当前仅本次运行生效。"),
+            )
     }
 
     fn settings_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -363,6 +407,7 @@ impl NativeMarkdownApp {
                             .text_color(rgb(p.muted))
                             .child("Applied immediately · Saved for next time"),
                     )
+                    .child(self.preview_refresh_settings(cx))
                     .child(
                         div()
                             .v_flex()
@@ -969,6 +1014,7 @@ impl NativeMarkdownApp {
             search_open: false,
             preview_markdown,
             pending_analysis: None,
+            preview_refresh_delay_ms: 1000,
             focused_section: None,
             selected_heading: None,
             reading_heading: None,
@@ -1000,6 +1046,17 @@ impl NativeMarkdownApp {
         }
     }
 
+    fn set_preview_refresh_delay(&mut self, delay_ms: u64, cx: &mut Context<Self>) {
+        if self.preview_refresh_delay_ms == delay_ms {
+            return;
+        }
+        self.preview_refresh_delay_ms = delay_ms;
+        if self.pending_analysis.is_some() {
+            self.schedule_analysis(cx);
+        }
+        cx.notify();
+    }
+
     fn schedule_analysis(&mut self, cx: &mut Context<Self>) {
         // Dropping the previous task cancels its timer, so only the last edit publishes.
         self.pending_analysis = None;
@@ -1008,8 +1065,9 @@ impl NativeMarkdownApp {
         if self.document.content.as_str() == self.preview_markdown.as_ref() {
             return;
         }
+        let delay = Duration::from_millis(self.preview_refresh_delay_ms);
         self.pending_analysis = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_secs(3)).await;
+            cx.background_executor().timer(delay).await;
             let _ = this.update(cx, |this, cx| {
                 this.refresh_analysis();
                 cx.notify();
@@ -3294,7 +3352,69 @@ mod tests {
     }
 
     #[gpui::test]
-    fn editor_refresh_waits_three_seconds_after_the_last_change(cx: &mut TestAppContext) {
+    fn preview_refresh_delay_control_restarts_pending_refresh(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("refresh-setting.md");
+        std::fs::write(&path, "# Before").unwrap();
+        let mut app = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| NativeMarkdownApp::new(Some(path), window, cx));
+            app = Some(view.clone());
+            gpui_component::Root::new(view, window, cx)
+        });
+        let app = app.unwrap();
+        cx.simulate_resize(size(px(1180.0), px(780.0)));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                assert_eq!(app.preview_refresh_delay_ms, 1000);
+                app.set_view_mode(ViewMode::Split, cx);
+                app.editor.update(cx, |editor, cx| {
+                    editor.set_selected_range(0..8, cx);
+                    editor.focus(window, cx);
+                });
+            })
+        });
+        draw_app(cx);
+        cx.simulate_input("# After");
+        draw_app(cx);
+        app.update(cx, |app, cx| {
+            app.settings_open = true;
+            cx.notify();
+        });
+        draw_app(cx);
+        for (delay, selector) in [
+            (3000, "preview-refresh-delay-3000"),
+            (500, "preview-refresh-delay-500"),
+        ] {
+            let position = cx.debug_bounds(selector).unwrap().center();
+            cx.simulate_mouse_down(position, gpui::MouseButton::Left, Modifiers::default());
+            cx.simulate_mouse_up(position, gpui::MouseButton::Left, Modifiers::default());
+            draw_app(cx);
+            app.read_with(cx, |app, _| assert_eq!(app.preview_refresh_delay_ms, delay));
+            cx.executor()
+                .advance_clock(Duration::from_millis(if delay == 3000 {
+                    1000
+                } else {
+                    499
+                }));
+            cx.run_until_parked();
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.preview_markdown.as_ref(), "# Before")
+            });
+        }
+        cx.executor().advance_clock(Duration::from_millis(1));
+        cx.run_until_parked();
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.preview_markdown.as_ref(), "# After")
+        });
+        cx.executor().advance_clock(Duration::from_secs(3));
+        cx.run_until_parked();
+        app.read_with(cx, |app, _| assert_eq!(app.preview_refresh_delay_ms, 500));
+    }
+
+    #[gpui::test]
+    fn editor_refresh_waits_one_second_after_the_last_change(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
         cx.update(bind_keys);
         let directory = tempfile::tempdir().unwrap();
@@ -3333,11 +3453,11 @@ mod tests {
                 "Focus must use the same snapshot"
             );
         });
-        cx.executor().advance_clock(Duration::from_secs(2));
+        cx.executor().advance_clock(Duration::from_millis(900));
         cx.run_until_parked();
         cx.simulate_input(" final");
         draw_app(cx);
-        cx.executor().advance_clock(Duration::from_millis(2999));
+        cx.executor().advance_clock(Duration::from_millis(999));
         cx.run_until_parked();
         app.update(cx, |app, cx| {
             assert_eq!(app.preview_markdown.as_ref(), original);

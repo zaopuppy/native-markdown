@@ -36,7 +36,7 @@ An invalid diagram shows its error and source while the rest of the document rem
 
 Press `Ctrl+2` for source and preview side by side. Both panes follow the same Markdown block as you scroll, including wrapped source lines. Turn off **Sync scrolling** whenever you want to compare different passages.
 
-The preview and outline refresh after you stop typing for **3 seconds**. Each edit restarts the delay; saving always uses your latest text. Scroll sync pauses until the preview catches up. Opening a document or explicitly using Find updates immediately.
+The preview and outline refresh after you stop typing for **1 second** by default. Choose 0.5, 1, 2, 3, or 5 seconds in Settings; this choice applies to the current run. Each edit restarts the delay; saving always uses your latest text. Scroll sync pauses until the preview catches up. Opening a document or explicitly using Find updates immediately.
 
 Preview updates reuse unchanged content blocks, including rendered diagrams, formulas, and code highlighting. An unchanged diagram keeps its zoom and expanded viewer; an edited diagram keeps its previous drawing until the new result is ready.
 
