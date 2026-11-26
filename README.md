@@ -48,6 +48,8 @@ Preview updates reuse unchanged content blocks, including rendered diagrams, for
 
 Use `Ctrl+1` to return to reading or `Ctrl+3` to work in source only. Save the Markdown itself with `Ctrl+S`; atomic saves, unsaved-change prompts, and background recovery help protect your edits.
 
+Paste screenshots, copied image files, or rich text from webpages, Word and Electron apps into the source editor with `Ctrl+V`. Standard HTML clipboard content becomes Markdown, with images stored in a sibling `document-name.assets/` folder. Processing runs in the background and inserts the result as one undoable edit; press `Esc` to cancel. `Ctrl+Shift+V` pastes plain text. Image downloads have a 5-second connection timeout, 10-second per-image timeout and 20-second batch deadline; unavailable images keep a failure label and source link. [Clipboard import details and limits](docs/clipboard-import.md).
+
 ### Settle into your own reading space
 
 Choose **Paper, Sepia, Sage, Midnight, or Nord**. The window, editor, reading surface, and diagrams share the theme, and your choice carries over to the next launch.

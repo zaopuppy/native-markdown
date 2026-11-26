@@ -12,6 +12,7 @@ mod layout_settings;
 mod markdown;
 #[cfg(windows)]
 mod native_menu;
+mod paste;
 mod recent;
 mod scroll_sync;
 mod search_ui;

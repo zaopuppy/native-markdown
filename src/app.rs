@@ -1,5 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 
 use crate::sidebar_hint::{self, HintBounds};
@@ -107,6 +111,7 @@ actions!(
         OpenDocument,
         SaveDocument,
         SaveDocumentAs,
+        PastePlainText,
         FindDocument,
         NextSearchHit,
         PreviousSearchHit,
@@ -139,6 +144,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-o", OpenDocument, Some(APP_CONTEXT)),
         KeyBinding::new("ctrl-s", SaveDocument, Some(APP_CONTEXT)),
         KeyBinding::new("ctrl-shift-s", SaveDocumentAs, Some(APP_CONTEXT)),
+        KeyBinding::new("ctrl-shift-v", PastePlainText, Some("NativeMarkdownSource")),
         KeyBinding::new("ctrl-f", FindDocument, Some(APP_CONTEXT)),
         KeyBinding::new("ctrl-e", TogglePreview, Some(APP_CONTEXT)),
         KeyBinding::new("ctrl-1", ShowPreview, Some(APP_CONTEXT)),
@@ -183,6 +189,18 @@ struct Notice {
     text: String,
     is_error: bool,
     created_at: Instant,
+}
+
+struct PendingPaste {
+    id: u64,
+    range: std::ops::Range<usize>,
+    cancelled: Arc<AtomicBool>,
+    prepared: Option<crate::paste::Import>,
+}
+impl Drop for PendingPaste {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -255,6 +273,8 @@ pub struct NativeMarkdownApp {
     recovery_available: bool,
     notice: Option<Notice>,
     dialog_in_flight: bool,
+    pending_paste: Option<PendingPaste>,
+    paste_request: u64,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -949,6 +969,19 @@ impl NativeMarkdownApp {
                         if this.document.content == content {
                             return;
                         }
+                        if let Some(pending) = &mut this.pending_paste {
+                            if !crate::paste::rebase_selection(
+                                &mut pending.range,
+                                &this.document.content,
+                                &content,
+                            ) {
+                                this.cancel_paste();
+                                this.set_notice(
+                                    "Paste cancelled: its insertion point was edited",
+                                    false,
+                                );
+                            }
+                        }
                         this.document.content = content;
                         this.source_search.clear();
 
@@ -1082,6 +1115,8 @@ impl NativeMarkdownApp {
             recovery_available: Document::recovery_exists(),
             notice,
             dialog_in_flight: false,
+            pending_paste: None,
+            paste_request: 0,
             _subscriptions: subscriptions,
         };
         if let Some(root) = app.file_tree.root().map(Path::to_path_buf) {
@@ -1092,6 +1127,7 @@ impl NativeMarkdownApp {
     }
 
     pub fn should_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.cancel_paste();
         if self.document.is_dirty() || self.dialog_in_flight {
             self.request_document_action(DocumentAction::CloseWindow, window, cx);
             false
@@ -1392,10 +1428,11 @@ impl NativeMarkdownApp {
             visible_change = true;
         }
 
-        if self
-            .notice
-            .as_ref()
-            .is_some_and(|notice| notice.created_at.elapsed() > Duration::from_secs(5))
+        if self.pending_paste.is_none()
+            && self
+                .notice
+                .as_ref()
+                .is_some_and(|notice| notice.created_at.elapsed() > Duration::from_secs(5))
         {
             self.notice = None;
             visible_change = true;
@@ -1421,6 +1458,7 @@ impl NativeMarkdownApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.cancel_paste();
         self.document = document;
         self.last_path.clone_from(&self.document.path);
 
@@ -1659,6 +1697,9 @@ impl NativeMarkdownApp {
                     app.update(cx, |app, cx| {
                         app.dialog_in_flight = false;
                         let Some(mut path) = path else {
+                            if app.cancel_paste() {
+                                app.set_notice("Paste cancelled", false);
+                            }
                             cx.notify();
                             return;
                         };
@@ -1680,6 +1721,7 @@ impl NativeMarkdownApp {
                                 }
                                 app.show_saved_notice(cx);
                                 app.remember_current_file();
+                                app.resume_paste(window, cx);
                                 if let Some(action) = continuation {
                                     app.perform_document_action(action, window, cx);
                                 } else {
@@ -1687,6 +1729,7 @@ impl NativeMarkdownApp {
                                 }
                             }
                             Err(error) => {
+                                app.cancel_paste();
                                 app.set_notice(format!("Could not save document: {error}"), true);
                                 cx.notify();
                             }
@@ -1875,6 +1918,7 @@ impl NativeMarkdownApp {
     }
 
     fn on_save_as(&mut self, _: &SaveDocumentAs, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_paste();
         self.save_as(None, window, cx);
     }
 
@@ -2967,10 +3011,193 @@ impl NativeMarkdownApp {
         panel.p_5().child(message).into_any_element()
     }
 
+    fn cancel_paste(&mut self) -> bool {
+        self.pending_paste.take().is_some()
+    }
+
+    fn begin_paste(
+        &mut self,
+        snapshot: crate::paste::Snapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.dialog_in_flight {
+            return;
+        }
+        self.cancel_paste();
+        // Flush a deferred Change before taking the source selection as an anchor.
+        let current = self.editor.read(cx).value().to_string();
+        if self.document.content != current {
+            self.document.content = current;
+            self.source_search.clear();
+            self.schedule_analysis(cx);
+        }
+        self.paste_request = self.paste_request.wrapping_add(1);
+        let id = self.paste_request;
+        self.pending_paste = Some(PendingPaste {
+            id,
+            range: self.editor.read(cx).selected_range(),
+            cancelled: Arc::new(AtomicBool::new(false)),
+            prepared: None,
+        });
+        self.set_notice("Preparing paste… Esc to cancel", false);
+        cx.notify();
+        let task = cx
+            .background_executor()
+            .spawn(async move { crate::paste::Import::prepare(snapshot) });
+        let app = cx.entity().downgrade();
+        window
+            .spawn(cx, async move |cx| {
+                let import = task.await;
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| {
+                        if app.pending_paste.as_ref().is_none_or(|p| p.id != id) {
+                            return;
+                        }
+                        if !import.has_images() {
+                            app.complete_paste(
+                                id,
+                                crate::paste::Finished {
+                                    markdown: import.markdown,
+                                    failed: 0,
+                                },
+                                window,
+                                cx,
+                            );
+                        } else {
+                            app.pending_paste.as_mut().unwrap().prepared = Some(import);
+                            if app.document.path.is_none() {
+                                app.set_notice(
+                                    "Save the Markdown document to choose its image folder",
+                                    false,
+                                );
+                                app.save_as(None, window, cx);
+                            } else {
+                                app.resume_paste(window, cx);
+                            }
+                        }
+                    })
+                    .ok();
+                })
+                .ok();
+            })
+            .detach();
+    }
+
+    fn resume_paste(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.document.path.clone() else {
+            return;
+        };
+        let Some(pending) = self.pending_paste.as_mut() else {
+            return;
+        };
+        let Some(import) = pending.prepared.take() else {
+            return;
+        };
+        let id = pending.id;
+        let cancelled = pending.cancelled.clone();
+        self.set_notice(
+            "Importing images… downloads limited to 20s. Esc to cancel",
+            false,
+        );
+        cx.notify();
+        let task = cx
+            .background_executor()
+            .spawn(async move { import.finish(&path, cancelled) });
+        let app = cx.entity().downgrade();
+        window
+            .spawn(cx, async move |cx| {
+                let result = task.await;
+                cx.update(|window, cx| {
+                    app.update(cx, |app, cx| app.complete_paste(id, result, window, cx))
+                        .ok();
+                })
+                .ok();
+            })
+            .detach();
+    }
+
+    fn complete_paste(
+        &mut self,
+        id: u64,
+        result: crate::paste::Finished,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_paste.as_ref().is_none_or(|p| p.id != id) {
+            return;
+        }
+        let pending = self.pending_paste.take().unwrap();
+        // An edit event can still be deferred when a background result arrives.
+        let current = self.editor.read(cx).value().to_string();
+        let mut range = pending.range.clone();
+        if current != self.document.content
+            && !crate::paste::rebase_selection(&mut range, &self.document.content, &current)
+        {
+            self.set_notice("Paste cancelled: its insertion point was edited", false);
+            cx.notify();
+            return;
+        }
+        let mut selection = self.editor.read(cx).selected_range();
+        let restore_selection = selection != range;
+        self.editor.update(cx, |editor, cx| {
+            editor.set_selected_range(range, cx);
+            editor.replace(result.markdown, window, cx);
+            if restore_selection
+                && crate::paste::rebase_selection(&mut selection, &current, &editor.value())
+            {
+                editor.set_selected_range(selection, cx);
+            }
+        });
+        self.set_notice(
+            if result.failed == 0 {
+                "Pasted Markdown".into()
+            } else {
+                format!(
+                    "Pasted Markdown; {} image(s) failed — source links kept where available",
+                    result.failed
+                )
+            },
+            result.failed != 0,
+        );
+        cx.notify();
+    }
+
     fn editor_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let zoom = cx.listener(Self::handle_scroll_wheel);
         div()
             .debug_selector(|| "editor-panel".into())
+            .key_context("NativeMarkdownSource")
+            .capture_action(
+                cx.listener(|this, _: &gpui_component::input::Paste, window, cx| {
+                    let clipboard = cx.read_from_clipboard();
+                    let snapshot = crate::paste::Snapshot::read(clipboard.as_ref());
+                    if snapshot.is_rich() {
+                        this.begin_paste(snapshot, window, cx);
+                        cx.stop_propagation();
+                    }
+                }),
+            )
+            .capture_action(cx.listener(|this, _: &gpui_component::input::Undo, _, cx| {
+                if this.cancel_paste() {
+                    this.set_notice("Paste cancelled", false);
+                    cx.notify();
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &Escape, _, cx| {
+                if this.cancel_paste() {
+                    this.set_notice("Paste cancelled", false);
+                    cx.notify();
+                    cx.stop_propagation();
+                }
+            }))
+            .on_action(cx.listener(|this, _: &PastePlainText, window, cx| {
+                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                    this.editor
+                        .update(cx, |editor, cx| editor.replace(text, window, cx));
+                }
+            }))
             .relative()
             .flex_1()
             .h_full()
@@ -3386,7 +3613,10 @@ impl Render for NativeMarkdownApp {
             .on_action(cx.listener(Self::on_save_as))
             .on_action(cx.listener(Self::on_find))
             .on_action(cx.listener(|this, _: &Escape, window, cx| {
-                if this.search_open {
+                if this.cancel_paste() {
+                    this.set_notice("Paste cancelled", false);
+                    cx.notify();
+                } else if this.search_open {
                     this.close_search(window, cx);
                 }
             }))
@@ -4747,6 +4977,215 @@ mod tests {
                 );
                 assert!(app.app_focus.is_focused(window));
             });
+        });
+    }
+
+    #[gpui::test]
+    fn bitmap_paste_is_atomic_and_plain_paste_keeps_text(cx: &mut TestAppContext) {
+        use base64::Engine as _;
+        cx.update(gpui_component::init);
+        cx.update(bind_keys);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("paste.md");
+        std::fs::write(&path, "before ").unwrap();
+        let (app, cx) = cx.add_window_view(|window, cx| {
+            let mut app = NativeMarkdownApp::new(Some(path.clone()), window, cx);
+            app.view_mode = ViewMode::Split;
+            app
+        });
+        cx.simulate_resize(size(px(1180.0), px(780.0)));
+        let bytes=base64::engine::general_purpose::STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==").unwrap();
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.editor.update(cx, |editor, cx| {
+                    editor.set_selected_range(7..7, cx);
+                    editor.focus(window, cx);
+                })
+            });
+            cx.write_to_clipboard(gpui::ClipboardItem::new_image(&gpui::Image::from_bytes(
+                gpui::ImageFormat::Png,
+                bytes,
+            )));
+        });
+        draw_app(cx);
+        cx.simulate_keystrokes("ctrl-v");
+        cx.run_until_parked();
+        draw_app(cx);
+        let pasted = app.read_with(cx, |app, _| {
+            assert!(app.pending_paste.is_none());
+            assert!(app.document.content.contains("paste.assets/nm-"));
+            app.document.content.clone()
+        });
+        assert_eq!(
+            std::fs::read_dir(directory.path().join("paste.assets"))
+                .unwrap()
+                .count(),
+            1
+        );
+        cx.simulate_keystrokes("ctrl-z");
+        draw_app(cx);
+        app.read_with(cx, |app, _| assert_eq!(app.document.content, "before "));
+        cx.simulate_keystrokes("ctrl-y");
+        draw_app(cx);
+        app.read_with(cx, |app, _| assert_eq!(app.document.content, pasted));
+        cx.update(|_, cx| {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string("<b>literal</b>".into()))
+        });
+        cx.simulate_keystrokes("ctrl-shift-v");
+        draw_app(cx);
+        app.read_with(cx, |app, _| {
+            assert!(app.document.content.contains("<b>literal</b>"))
+        });
+        cx.simulate_keystrokes("ctrl-s");
+        draw_app(cx);
+        assert!(Document::open(path)
+            .unwrap()
+            .content
+            .contains("paste.assets/nm-"));
+    }
+
+    #[gpui::test]
+    fn rich_paste_replaces_selection_in_one_undo(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        cx.update(bind_keys);
+        let (app, cx) = cx.add_window_view(|window, cx| {
+            let mut app = NativeMarkdownApp::new(None, window, cx);
+            app.view_mode = ViewMode::Source;
+            app
+        });
+        cx.simulate_resize(size(px(1180.0), px(780.0)));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.editor.update(cx, |editor, cx| {
+                    editor.set_value("前🦀 replace 尾", window, cx);
+                    editor.set_selected_range(8..15, cx);
+                    editor.focus(window, cx);
+                });
+                app.begin_paste(
+                    crate::paste::Snapshot {
+                        html: Some("<b>粘贴</b><a href='https://example.com'>链接</a>".into()),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
+            })
+        });
+        cx.run_until_parked();
+        draw_app(cx);
+        let pasted = app.read_with(cx, |app, _| {
+            assert!(app.pending_paste.is_none());
+            assert!(app.document.content.contains("**粘贴**"));
+            assert!(app.document.content.starts_with("前🦀 "));
+            app.document.content.clone()
+        });
+        cx.simulate_keystrokes("ctrl-z");
+        draw_app(cx);
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.document.content, "前🦀 replace 尾")
+        });
+        cx.simulate_keystrokes("ctrl-y");
+        draw_app(cx);
+        app.read_with(cx, |app, _| assert_eq!(app.document.content, pasted));
+    }
+
+    #[gpui::test]
+    fn pending_paste_rebases_edits_and_rejects_cancelled_results(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        cx.update(bind_keys);
+        let (app, cx) = cx.add_window_view(|window, cx| {
+            let mut app = NativeMarkdownApp::new(None, window, cx);
+            app.view_mode = ViewMode::Source;
+            app
+        });
+        cx.simulate_resize(size(px(1180.0), px(780.0)));
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.document.content = "abc".into();
+                app.editor
+                    .update(cx, |e, cx| e.set_value("abc", window, cx));
+            })
+        });
+        draw_app(cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.pending_paste = Some(PendingPaste {
+                    id: 1,
+                    range: 3..3,
+                    cancelled: Arc::new(AtomicBool::new(false)),
+                    prepared: None,
+                });
+                app.editor.update(cx, |editor, cx| {
+                    editor.set_selected_range(0..0, cx);
+                    editor.replace("🦀", window, cx);
+                    editor.focus(window, cx);
+                });
+            })
+        });
+        draw_app(cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.complete_paste(
+                    1,
+                    crate::paste::Finished {
+                        markdown: "PASTE".into(),
+                        failed: 0,
+                    },
+                    window,
+                    cx,
+                )
+            })
+        });
+        draw_app(cx);
+        app.read_with(cx, |app, cx| {
+            assert_eq!(app.document.content, "🦀abcPASTE");
+            assert_eq!(app.editor.read(cx).selected_range(), 4..4);
+        });
+        cx.update(|_, cx| {
+            app.update(cx, |app, _| {
+                app.pending_paste = Some(PendingPaste {
+                    id: 2,
+                    range: 4..4,
+                    cancelled: Arc::new(AtomicBool::new(false)),
+                    prepared: None,
+                })
+            })
+        });
+        cx.simulate_keystrokes("escape");
+        draw_app(cx);
+        cx.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.complete_paste(
+                    2,
+                    crate::paste::Finished {
+                        markdown: "LATE".into(),
+                        failed: 0,
+                    },
+                    window,
+                    cx,
+                );
+                assert!(!app.editor.read(cx).value().contains("LATE"));
+                app.pending_paste = Some(PendingPaste {
+                    id: 3,
+                    range: 4..4,
+                    cancelled: Arc::new(AtomicBool::new(false)),
+                    prepared: None,
+                });
+                app.replace_document(Document::new_document(), window, cx);
+                app.complete_paste(
+                    3,
+                    crate::paste::Finished {
+                        markdown: "WRONG".into(),
+                        failed: 0,
+                    },
+                    window,
+                    cx,
+                );
+            })
+        });
+        draw_app(cx);
+        app.read_with(cx, |app, _| {
+            assert_eq!(app.document.content, "# Untitled\n\n")
         });
     }
 

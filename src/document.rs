@@ -98,7 +98,16 @@ impl Document {
     }
 
     pub fn save_as(&mut self, path: PathBuf) -> io::Result<()> {
-        self.write_to(path)
+        let migration = self
+            .path
+            .as_deref()
+            .map(|old| crate::paste::Migration::prepare(&self.content, old, &path))
+            .transpose()?;
+        self.write_to(path)?;
+        if let Some(migration) = migration {
+            migration.commit();
+        }
+        Ok(())
     }
 
     fn write_to(&mut self, path: PathBuf) -> io::Result<()> {

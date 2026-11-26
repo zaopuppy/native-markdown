@@ -14,12 +14,17 @@ gpui-component = { version = "=0.10.0", features = ["tree-sitter-markdown"] }
 pulldown-cmark = "0.12"
 rfd = "0.15"
 tempfile = "3.12"
+base64 = "0.22"
+sha2 = "0.10"
+url = "2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+htmd = "0.6.1"
 
 [target.'cfg(windows)'.dependencies]
 wry = "=0.57.3"
 ammonia = "4"
 percent-encoding = "2"
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_DataExchange", "Win32_System_Memory"] }
 
 [dev-dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.12", features = ["test-support"] }
