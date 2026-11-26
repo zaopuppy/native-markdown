@@ -226,6 +226,7 @@ pub struct NativeMarkdownApp {
     reading_width: u16,
     reading_width_follows_zoom: bool,
     settings_open: bool,
+    saved_settings: LayoutSettings,
     settings_section: usize,
     download_timeouts: crate::paste::DownloadTimeouts,
     document: Document,
@@ -347,7 +348,7 @@ impl NativeMarkdownApp {
                 div()
                     .text_xs()
                     .text_color(rgb(p.muted))
-                    .child("默认 1 秒。当前仅本次运行生效。"),
+                    .child("默认 1 秒。修改后保存，下次启动继续使用。"),
             )
     }
 
@@ -362,34 +363,57 @@ impl NativeMarkdownApp {
         }
         self.markdown_dialect = dialect;
         self.preserve_line_breaks = preserve_line_breaks;
+        self.persist_layout();
         self.refresh_analysis();
         cx.notify();
     }
 
     fn markdown_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div().v_flex().gap_3().mt_3()
+        div()
+            .v_flex()
+            .gap_3()
+            .mt_3()
             .child(div().font_semibold().child("Markdown · 方言与换行"))
-            .child(div().h_flex().gap_2().children([
-                (markdown::Dialect::GitHub, "GitHub (GFM)"),
-                (markdown::Dialect::CommonMark, "CommonMark"),
-            ].into_iter().map(|(dialect, label)| {
-                Button::new(("markdown-dialect", dialect as usize)).label(label).small()
-                    .selected(self.markdown_dialect == dialect)
-                    .debug_selector(move || format!("markdown-dialect-{}", dialect.id()))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.set_markdown_settings(dialect, this.preserve_line_breaks, cx);
-                    }))
-            })))
-            .child(Button::new("markdown-preserve-line-breaks").label("保留普通换行")
-                .selected(self.preserve_line_breaks)
-                .debug_selector(|| "markdown-preserve-line-breaks".into())
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.set_markdown_settings(this.markdown_dialect, !this.preserve_line_breaks, cx);
-                })))
-            .child(div().text_xs().text_color(rgb(self.palette().muted))
-                .child("默认 GFM；普通回车按段落合并。开启保留换行后，普通回车也会显示为换行。"))
-            .child(div().text_xs().text_color(rgb(self.palette().muted))
-                .child("GFM 提供表格、任务列表、删除线和脚注；两种模式均保留公式与 Mermaid。仅本次运行生效。"))
+            .child(
+                div().h_flex().gap_2().children(
+                    [
+                        (markdown::Dialect::GitHub, "GitHub (GFM)"),
+                        (markdown::Dialect::CommonMark, "CommonMark"),
+                    ]
+                    .into_iter()
+                    .map(|(dialect, label)| {
+                        Button::new(("markdown-dialect", dialect as usize))
+                            .label(label)
+                            .small()
+                            .selected(self.markdown_dialect == dialect)
+                            .debug_selector(move || format!("markdown-dialect-{}", dialect.id()))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.set_markdown_settings(dialect, this.preserve_line_breaks, cx);
+                            }))
+                    }),
+                ),
+            )
+            .child(
+                Button::new("markdown-preserve-line-breaks")
+                    .label("保留普通换行")
+                    .selected(self.preserve_line_breaks)
+                    .debug_selector(|| "markdown-preserve-line-breaks".into())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.set_markdown_settings(
+                            this.markdown_dialect,
+                            !this.preserve_line_breaks,
+                            cx,
+                        );
+                    })),
+            )
+            .child(
+                div().text_xs().text_color(rgb(self.palette().muted)).child(
+                    "默认 GFM；普通回车按段落合并。开启保留换行后，普通回车也会显示为换行。",
+                ),
+            )
+            .child(div().text_xs().text_color(rgb(self.palette().muted)).child(
+                "GFM 提供表格、任务列表、删除线和脚注；两种模式均保留公式与 Mermaid。修改后保存。",
+            ))
     }
 
     fn download_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -416,6 +440,7 @@ impl NativeMarkdownApp {
                                     1 => this.download_timeouts.image_secs = seconds,
                                     _ => this.download_timeouts.batch_secs = seconds,
                                 }
+                                this.persist_layout();
                                 cx.notify();
                             }))
                     })))
@@ -423,11 +448,12 @@ impl NativeMarkdownApp {
             .child(div().text_xs().text_color(rgb(self.palette().muted))
                 .child("默认：连接 5 秒 / 单张 10 秒 / 整次 20 秒。实际等待取各级剩余期限中较短者；不自动重试。"))
             .child(div().text_xs().text_color(rgb(self.palette().muted))
-                .child("仅本次运行生效，用于之后开始的图片导入；正在下载的任务保持原期限。"))
+                .child("修改后保存并用于之后开始的图片导入；正在下载的任务保持原期限。"))
             .child(Button::new("reset-download-timeouts").label("恢复默认超时").small()
                 .debug_selector(|| "reset-download-timeouts".into())
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.download_timeouts = crate::paste::DownloadTimeouts::default();
+                    this.persist_layout();
                     cx.notify();
                 })))
     }
@@ -526,6 +552,7 @@ impl NativeMarkdownApp {
                                         .debug_selector(move || format!("reading-width-{width}"))
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.reading_width = width;
+                                            this.persist_layout();
                                             cx.notify();
                                         }))
                                 }),
@@ -545,15 +572,13 @@ impl NativeMarkdownApp {
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.reading_width_follows_zoom =
                                         !this.reading_width_follows_zoom;
+                                    this.persist_layout();
                                     cx.notify();
                                 })),
                         )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(rgb(p.muted))
-                                .child("放大时增加宽度，最多铺满阅读区。当前仅本次运行生效。"),
-                        ),
+                        .child(div().text_xs().text_color(rgb(p.muted)).child(
+                            "放大时增加宽度，最多铺满阅读区。修改后保存，下次启动继续使用。",
+                        )),
                 ),
         };
         div()
@@ -1118,10 +1143,9 @@ impl NativeMarkdownApp {
         })
         .detach();
 
-        let outline =
-            markdown::headings_with_dialect(&document.content, markdown::Dialect::default());
+        let outline = markdown::headings_with_dialect(&document.content, layout.markdown_dialect);
         let word_count =
-            markdown::word_count_with_dialect(&document.content, markdown::Dialect::default());
+            markdown::word_count_with_dialect(&document.content, layout.markdown_dialect);
         let reading_minutes = markdown::reading_minutes(word_count);
         let last_path = document.path.clone().or(initial_path);
         let preview_markdown = SharedString::from(document.content.clone());
@@ -1147,11 +1171,12 @@ impl NativeMarkdownApp {
             #[cfg(windows)]
             web_starting: false,
             appearance: layout.appearance,
-            reading_width: 980,
-            reading_width_follows_zoom: true,
+            reading_width: layout.reading_width,
+            reading_width_follows_zoom: layout.reading_width_follows_zoom,
             settings_open: false,
+            saved_settings: layout,
             settings_section: 0,
-            download_timeouts: crate::paste::DownloadTimeouts::default(),
+            download_timeouts: layout.download_timeouts,
             document,
             recent,
             recent_folder_pending: None,
@@ -1185,9 +1210,9 @@ impl NativeMarkdownApp {
             search_open: false,
             preview_markdown,
             pending_analysis: None,
-            preview_refresh_delay_ms: 1000,
-            markdown_dialect: markdown::Dialect::default(),
-            preserve_line_breaks: false,
+            preview_refresh_delay_ms: layout.preview_refresh_delay_ms,
+            markdown_dialect: layout.markdown_dialect,
+            preserve_line_breaks: layout.preserve_line_breaks,
             focused_section: None,
             selected_heading: None,
             reading_heading: None,
@@ -1227,6 +1252,7 @@ impl NativeMarkdownApp {
             return;
         }
         self.preview_refresh_delay_ms = delay_ms;
+        self.persist_layout();
         if self.pending_analysis.is_some() {
             self.schedule_analysis(cx);
         }
@@ -1280,15 +1306,34 @@ impl NativeMarkdownApp {
             .filter(|heading| *heading < self.outline.len());
     }
 
-    fn persist_layout(&self) {
-        let settings = LayoutSettings {
+    fn current_settings(&self) -> LayoutSettings {
+        LayoutSettings {
             appearance: self.appearance,
             file_tree_open: self.file_tree_open,
             outline_open: self.outline_open,
             file_tree_width: self.file_tree_width,
             outline_width: self.outline_width,
-        };
-        let _ = settings.save();
+            reading_width: self.reading_width,
+            reading_width_follows_zoom: self.reading_width_follows_zoom,
+            preview_refresh_delay_ms: self.preview_refresh_delay_ms,
+            markdown_dialect: self.markdown_dialect,
+            preserve_line_breaks: self.preserve_line_breaks,
+            download_timeouts: self.download_timeouts,
+        }
+    }
+
+    fn persist_layout(&mut self) {
+        let settings = self.current_settings();
+        if settings == self.saved_settings {
+            return;
+        }
+        match settings.save() {
+            Ok(()) => self.saved_settings = settings,
+            Err(error) => self.set_notice(
+                format!("Could not save settings: {error}. Current choices remain active."),
+                true,
+            ),
+        }
     }
 
     fn set_file_tree_root(
@@ -3476,17 +3521,11 @@ impl NativeMarkdownApp {
                     } else {
                         app.outline_width
                     };
-                    let mut settings = LayoutSettings {
-                        appearance: app.appearance,
-                        file_tree_open: app.file_tree_open,
-                        outline_open: app.outline_open,
-                        file_tree_width: app.file_tree_width,
-                        outline_width: app.outline_width,
-                    };
+                    let mut settings = app.current_settings();
                     settings.set_widths(file_tree_width, outline_width);
                     app.file_tree_width = settings.file_tree_width;
                     app.outline_width = settings.outline_width;
-                    let _ = settings.save();
+                    app.persist_layout();
                 })
                 .ok();
             })
@@ -3851,6 +3890,7 @@ mod tests {
             assert_eq!(cx.debug_bounds("settings-section-2").unwrap(), nav);
             app.read_with(cx, |app, _| {
                 assert_eq!(app.download_timeouts, expected);
+                assert_eq!(app.saved_settings, app.current_settings());
                 assert!(app.document.content.is_empty());
                 assert!(!app.document.is_dirty());
             });
@@ -3894,6 +3934,7 @@ mod tests {
                 assert_eq!(app.document.content, source);
                 assert!(!app.document.is_dirty());
                 assert_eq!(app.preview_markdown.as_ref(), source);
+                assert_eq!(app.saved_settings, app.current_settings());
                 assert!(app.pending_analysis.is_none());
                 if selector == "markdown-dialect-commonmark" {
                     assert_eq!(app.markdown_dialect, markdown::Dialect::CommonMark);
@@ -3950,7 +3991,10 @@ mod tests {
             cx.simulate_mouse_down(position, gpui::MouseButton::Left, Modifiers::default());
             cx.simulate_mouse_up(position, gpui::MouseButton::Left, Modifiers::default());
             draw_app(cx);
-            app.read_with(cx, |app, _| assert_eq!(app.preview_refresh_delay_ms, delay));
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.preview_refresh_delay_ms, delay);
+                assert_eq!(app.saved_settings, app.current_settings());
+            });
             cx.executor()
                 .advance_clock(Duration::from_millis(if delay == 3000 {
                     1000
@@ -4877,6 +4921,7 @@ mod tests {
             draw_app(cx);
             app.read_with(cx, |app, _| {
                 assert_eq!(app.reading_width, width, "{selector}");
+                assert_eq!(app.saved_settings, app.current_settings());
                 assert_eq!(app.reading_width_follows_zoom, follow, "{selector}");
                 assert_eq!(app.view_mode, ViewMode::Split);
                 assert!(app.document.content.is_empty());

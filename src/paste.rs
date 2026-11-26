@@ -23,7 +23,7 @@ const MAX_IMAGES: usize = 50;
 #[cfg(all(windows, not(test)))]
 const MAX_CLIPBOARD: usize = 16 * 1024 * 1024;
 
-/// Session-only limits captured when a background import starts.
+/// Download limits captured when a background import starts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DownloadTimeouts {
     pub connect_secs: u64,

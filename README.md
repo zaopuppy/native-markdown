@@ -36,11 +36,11 @@ An invalid diagram shows its error and source while the rest of the document rem
 
 Press `Ctrl+2` for source and preview side by side. Both panes follow the same Markdown block as you scroll, including wrapped source lines. Turn off **Sync scrolling** whenever you want to compare different passages.
 
-The preview and outline refresh after you stop typing for **1 second** by default. Choose 0.5, 1, 2, 3, or 5 seconds in Settings; this choice applies to the current run. Each edit restarts the delay; saving always uses your latest text. Scroll sync pauses until the preview catches up. Opening a document or explicitly using Find updates immediately.
+The preview and outline refresh after you stop typing for **1 second** by default. Choose 0.5, 1, 2, 3, or 5 seconds in Settings; the app remembers this choice. Each edit restarts the delay; saving always uses your latest text. Scroll sync pauses until the preview catches up. Opening a document or explicitly using Find updates immediately.
 
-Settings groups controls into **Appearance & reading**, **Markdown & preview**, and **Paste & downloads**. Image connection, per-image and batch timeouts are configurable for the current run (defaults: 5 / 10 / 20 seconds); changes apply to subsequent imports.
+Settings groups controls into **Appearance & reading**, **Markdown & preview**, and **Paste & downloads**. Image connection, per-image and batch timeouts are saved in Settings (defaults: 5 / 10 / 20 seconds); changes apply to subsequent imports.
 
-Settings offers **GitHub (GFM)** (default) and **CommonMark** parsing. **Preserve ordinary line breaks** optionally displays single newlines as visible breaks; it is off by default, following GFM soft-break rules. Both modes retain math and Mermaid support. These settings apply to the current run.
+Settings offers **GitHub (GFM)** (default) and **CommonMark** parsing. **Preserve ordinary line breaks** optionally displays single newlines as visible breaks; it is off by default, following GFM soft-break rules. Both modes retain math and Mermaid support. These settings are remembered across restarts.
 
 Preview updates reuse unchanged content blocks, including rendered diagrams, formulas, and code highlighting. An unchanged diagram keeps its zoom and expanded viewer; an edited diagram keeps its previous drawing until the new result is ready.
 
@@ -50,7 +50,7 @@ Preview updates reuse unchanged content blocks, including rendered diagrams, for
 
 Use `Ctrl+1` to return to reading or `Ctrl+3` to work in source only. Save the Markdown itself with `Ctrl+S`; atomic saves, unsaved-change prompts, and background recovery help protect your edits.
 
-Paste screenshots, copied image files, or rich text from webpages, Word and Electron apps into the source editor with `Ctrl+V`. Standard HTML clipboard content becomes Markdown, with images stored in a sibling `document-name.assets/` folder. Processing runs in the background and inserts the result as one undoable edit; press `Esc` to cancel. `Ctrl+Shift+V` pastes plain text. Image downloads have a 5-second connection timeout, 10-second per-image timeout and 20-second batch deadline; unavailable images keep a failure label and source link. [Clipboard import details and limits](docs/clipboard-import.md).
+Paste screenshots, copied image files, or rich text from webpages, Word and Electron apps into the source editor with `Ctrl+V`. Standard HTML clipboard content becomes Markdown, with images stored in a sibling `document-name.assets/` folder. Processing runs in the background and inserts the result as one undoable edit; press `Esc` to cancel. `Ctrl+Shift+V` pastes plain text. By default, image downloads have a 5-second connection timeout, 10-second per-image timeout and 20-second batch deadline; unavailable images keep a failure label and source link. [Clipboard import details and limits](docs/clipboard-import.md).
 
 ### Settle into your own reading space
 
@@ -120,7 +120,7 @@ Your documents stay ordinary UTF-8 Markdown files. Mermaid, math, and code highl
 
 Recent history lives at `%APPDATA%/NativeMarkdown/recent.json`, with a 64 KiB read/write limit. Successfully opening a path absent from its current list triggers one atomic snapshot write. Reopening a listed path only reorders it in memory; there are no timer or exit writes. Following a document's folder implicitly does not add a folder record. Write failures retain the in-memory history and show an error.
 
-Theme and sidebar layout are stored in `%APPDATA%/NativeMarkdown/layout.conf`. Reading-width choices and the scroll-sync toggle stay in memory for the current run. Unsaved-edit recovery uses `%TEMP%/native-markdown-recovery.md`.
+Theme, sidebar layout, reading width, preview delay, Markdown options and download timeouts are stored in `%APPDATA%/NativeMarkdown/layout.conf`. Settings save only when changed, using an atomic replacement; failures keep the current choices active and show an error. The scroll-sync toggle stays in memory for the current run. Unsaved-edit recovery uses `%TEMP%/native-markdown-recovery.md`.
 
 Normal Save skips disk access when the text matches its in-memory open/last-save baseline, including edits that were undone. Save As still writes the selected target. `Saved` appears for one second only after a successful document write; opening an unchanged document does not show it.
 
