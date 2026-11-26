@@ -226,6 +226,8 @@ pub struct NativeMarkdownApp {
     reading_width: u16,
     reading_width_follows_zoom: bool,
     settings_open: bool,
+    settings_section: usize,
+    download_timeouts: crate::paste::DownloadTimeouts,
     document: Document,
     recent: crate::recent::Recent,
     recent_folder_pending: Option<PathBuf>,
@@ -390,31 +392,198 @@ impl NativeMarkdownApp {
                 .child("GFM 提供表格、任务列表、删除线和脚注；两种模式均保留公式与 Mermaid。仅本次运行生效。"))
     }
 
+    fn download_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let options = self.download_timeouts;
+        div().v_flex().gap_4()
+            .child(div().font_semibold().child("图片下载超时"))
+            .child(div().text_sm().text_color(rgb(self.palette().muted))
+                .child("后台下载有明确期限；失败处保留原因和可用的图片来源链接。"))
+            .children([
+                (0usize, "连接超时", "建立网络连接的等待上限。", options.connect_secs, vec![3, 5, 10, 15, 30]),
+                (1, "单张图片超时", "包含连接和响应体下载的总时间。", options.image_secs, vec![5, 10, 20, 30, 60]),
+                (2, "整次粘贴超时", "所有网络图片共享的期限，包含排队时间。", options.batch_secs, vec![10, 20, 30, 60, 120]),
+            ].into_iter().map(|(kind, title, hint, current, values)| {
+                div().v_flex().gap_2()
+                    .child(div().font_semibold().child(title))
+                    .child(div().text_sm().text_color(rgb(self.palette().muted)).child(hint))
+                    .child(div().h_flex().gap_2().flex_wrap().children(values.into_iter().map(|seconds| {
+                        Button::new(("download-timeout", kind * 1000 + seconds as usize))
+                            .label(format!("{seconds} 秒")).small().selected(current == seconds)
+                            .debug_selector(move || format!("download-timeout-{kind}-{seconds}"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                match kind {
+                                    0 => this.download_timeouts.connect_secs = seconds,
+                                    1 => this.download_timeouts.image_secs = seconds,
+                                    _ => this.download_timeouts.batch_secs = seconds,
+                                }
+                                cx.notify();
+                            }))
+                    })))
+            }))
+            .child(div().text_xs().text_color(rgb(self.palette().muted))
+                .child("默认：连接 5 秒 / 单张 10 秒 / 整次 20 秒。实际等待取各级剩余期限中较短者；不自动重试。"))
+            .child(div().text_xs().text_color(rgb(self.palette().muted))
+                .child("仅本次运行生效，用于之后开始的图片导入；正在下载的任务保持原期限。"))
+            .child(Button::new("reset-download-timeouts").label("恢复默认超时").small()
+                .debug_selector(|| "reset-download-timeouts".into())
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.download_timeouts = crate::paste::DownloadTimeouts::default();
+                    cx.notify();
+                })))
+    }
+
     fn settings_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let p = self.palette();
+        let content = match self.settings_section {
+            1 => div()
+                .v_flex()
+                .gap_4()
+                .child(self.markdown_settings(cx))
+                .child(self.preview_refresh_settings(cx)),
+            2 => div().v_flex().gap_4().child(self.download_settings(cx)),
+            _ => div()
+                .v_flex()
+                .gap_4()
+                .child(
+                    div()
+                        .v_flex()
+                        .gap_1()
+                        .child(div().font_semibold().child("Appearance · 外观"))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(rgb(p.muted))
+                                .child("Choose a theme for the app, editor and reading area."),
+                        ),
+                )
+                .children(Appearance::ALL.into_iter().map(|appearance| {
+                    let colors = appearance.palette();
+                    let selected = appearance == self.appearance;
+                    Button::new(appearance.id())
+                        .accessibility_label(appearance.label())
+                        .w_full()
+                        .h(px(52.0))
+                        .ghost()
+                        .border_1()
+                        .border_color(rgb(if selected { p.accent } else { p.border }))
+                        .bg(rgb(if selected { p.selection } else { p.surface }))
+                        .child(
+                            div()
+                                .h_flex()
+                                .w_full()
+                                .items_center()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .w(px(30.0))
+                                        .h(px(30.0))
+                                        .rounded_md()
+                                        .border_1()
+                                        .border_color(rgb(colors.border))
+                                        .bg(rgb(colors.canvas))
+                                        .text_color(rgb(colors.text))
+                                        .child("Aa"),
+                                )
+                                .child(div().flex_1().child(appearance.label()))
+                                .child(if selected { "✓" } else { "" }),
+                        )
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.set_appearance(appearance, cx)),
+                        )
+                }))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(rgb(p.muted))
+                        .child("Applied immediately · Saved for next time"),
+                )
+                .child(
+                    div()
+                        .v_flex()
+                        .gap_3()
+                        .mt_3()
+                        .child(div().font_semibold().child("Reading width · 正文宽度"))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(rgb(p.muted))
+                                .child("100% 缩放时的宽度上限；始终适应阅读区。"),
+                        )
+                        .child(
+                            div().h_flex().gap_2().flex_wrap().children(
+                                [
+                                    (720u16, "紧凑 · 720"),
+                                    (980, "标准 · 980"),
+                                    (1280, "宽 · 1280"),
+                                    (0, "铺满"),
+                                ]
+                                .into_iter()
+                                .map(|(width, label)| {
+                                    Button::new(("reading-width", width as usize))
+                                        .label(label)
+                                        .small()
+                                        .selected(self.reading_width == width)
+                                        .debug_selector(move || format!("reading-width-{width}"))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.reading_width = width;
+                                            cx.notify();
+                                        }))
+                                }),
+                            ),
+                        )
+                        .child(
+                            Button::new("reading-width-follow-zoom")
+                                .label(if self.reading_width_follows_zoom {
+                                    "✓ 宽度随放大比例扩展"
+                                } else {
+                                    "宽度随放大比例扩展"
+                                })
+                                .accessibility_label("宽度随放大比例扩展")
+                                .selected(self.reading_width_follows_zoom)
+                                .disabled(self.reading_width == 0)
+                                .debug_selector(|| "reading-width-follow-zoom".into())
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.reading_width_follows_zoom =
+                                        !this.reading_width_follows_zoom;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(p.muted))
+                                .child("放大时增加宽度，最多铺满阅读区。当前仅本次运行生效。"),
+                        ),
+                ),
+        };
         div()
             .id("settings-panel")
+            .v_flex()
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
             .p_6()
             .bg(rgb(p.canvas))
             .child(
                 div()
                     .v_flex()
-                    .max_w(px(560.0))
+                    .w_full()
+                    .max_w(px(640.0))
                     .mx_auto()
+                    .flex_1()
+                    .min_h_0()
                     .gap_4()
                     .child(
                         div()
                             .h_flex()
+                            .flex_shrink_0()
                             .items_center()
                             .justify_between()
-                            .child(div().text_xl().font_semibold().child("Settings"))
+                            .child(div().text_xl().font_semibold().child("Settings · 设置"))
                             .child(
                                 Button::new("close-settings")
                                     .label("Done")
                                     .small()
+                                    .debug_selector(|| "close-settings".into())
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.settings_open = false;
                                         cx.notify();
@@ -422,120 +591,34 @@ impl NativeMarkdownApp {
                             ),
                     )
                     .child(
-                        div()
-                            .v_flex()
-                            .gap_1()
-                            .child(div().font_semibold().child("Appearance · 外观"))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(rgb(p.muted))
-                                    .child("Choose a theme for the app, editor and reading area."),
-                            ),
-                    )
-                    .children(Appearance::ALL.into_iter().map(|appearance| {
-                        let colors = appearance.palette();
-                        let selected = appearance == self.appearance;
-                        Button::new(appearance.id())
-                            .accessibility_label(appearance.label())
-                            .w_full()
-                            .h(px(52.0))
-                            .ghost()
-                            .border_1()
-                            .border_color(rgb(if selected { p.accent } else { p.border }))
-                            .bg(rgb(if selected { p.selection } else { p.surface }))
-                            .child(
-                                div()
-                                    .h_flex()
-                                    .w_full()
-                                    .items_center()
-                                    .gap_3()
-                                    .child(
-                                        div()
-                                            .w(px(30.0))
-                                            .h(px(30.0))
-                                            .rounded_md()
-                                            .border_1()
-                                            .border_color(rgb(colors.border))
-                                            .bg(rgb(colors.canvas))
-                                            .text_color(rgb(colors.text))
-                                            .child("Aa"),
-                                    )
-                                    .child(div().flex_1().child(appearance.label()))
-                                    .child(if selected { "✓" } else { "" }),
-                            )
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.set_appearance(appearance, cx)
-                            }))
-                    }))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(p.muted))
-                            .child("Applied immediately · Saved for next time"),
-                    )
-                    .child(self.preview_refresh_settings(cx))
-                    .child(
-                        div()
-                            .v_flex()
-                            .gap_3()
-                            .mt_3()
-                            .child(div().font_semibold().child("Reading width · 正文宽度"))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(rgb(p.muted))
-                                    .child("100% 缩放时的宽度上限；始终适应阅读区。"),
-                            )
-                            .child(
-                                div().h_flex().gap_2().flex_wrap().children(
-                                    [
-                                        (720u16, "紧凑 · 720"),
-                                        (980, "标准 · 980"),
-                                        (1280, "宽 · 1280"),
-                                        (0, "铺满"),
-                                    ]
-                                    .into_iter()
-                                    .map(|(width, label)| {
-                                        Button::new(("reading-width", width as usize))
-                                            .label(label)
-                                            .small()
-                                            .selected(self.reading_width == width)
-                                            .debug_selector(move || {
-                                                format!("reading-width-{width}")
-                                            })
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.reading_width = width;
-                                                cx.notify();
-                                            }))
-                                    }),
-                                ),
-                            )
-                            .child(
-                                Button::new("reading-width-follow-zoom")
-                                    .label(if self.reading_width_follows_zoom {
-                                        "✓ 宽度随放大比例扩展"
-                                    } else {
-                                        "宽度随放大比例扩展"
-                                    })
-                                    .accessibility_label("宽度随放大比例扩展")
-                                    .selected(self.reading_width_follows_zoom)
-                                    .disabled(self.reading_width == 0)
-                                    .debug_selector(|| "reading-width-follow-zoom".into())
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.reading_width_follows_zoom =
-                                            !this.reading_width_follows_zoom;
+                        div().h_flex().flex_shrink_0().gap_2().children(
+                            [
+                                (0usize, "外观与阅读"),
+                                (1, "Markdown 与预览"),
+                                (2, "粘贴与下载"),
+                            ]
+                            .into_iter()
+                            .map(|(section, label)| {
+                                Button::new(("settings-section", section))
+                                    .label(label)
+                                    .small()
+                                    .selected(self.settings_section == section)
+                                    .debug_selector(move || format!("settings-section-{section}"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.settings_section = section;
                                         cx.notify();
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(p.muted))
-                                    .child("放大时增加宽度，最多铺满阅读区。当前仅本次运行生效。"),
-                            ),
+                                    }))
+                            }),
+                        ),
                     )
-                    .child(self.markdown_settings(cx)),
+                    .child(
+                        div()
+                            .id(("settings-content", self.settings_section))
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .child(content),
+                    ),
             )
     }
 
@@ -1067,6 +1150,8 @@ impl NativeMarkdownApp {
             reading_width: 980,
             reading_width_follows_zoom: true,
             settings_open: false,
+            settings_section: 0,
+            download_timeouts: crate::paste::DownloadTimeouts::default(),
             document,
             recent,
             recent_folder_pending: None,
@@ -3096,14 +3181,18 @@ impl NativeMarkdownApp {
         };
         let id = pending.id;
         let cancelled = pending.cancelled.clone();
+        let timeouts = self.download_timeouts;
         self.set_notice(
-            "Importing images… downloads limited to 20s. Esc to cancel",
+            format!(
+                "Importing images… downloads limited to {}s. Esc to cancel",
+                timeouts.batch_secs
+            ),
             false,
         );
         cx.notify();
         let task = cx
             .background_executor()
-            .spawn(async move { import.finish(&path, cancelled) });
+            .spawn(async move { import.finish(&path, cancelled, timeouts) });
         let app = cx.entity().downgrade();
         window
             .spawn(cx, async move |cx| {
@@ -3679,6 +3768,96 @@ mod tests {
     }
 
     #[gpui::test]
+    fn settings_categories_and_download_controls_preserve_layout(cx: &mut TestAppContext) {
+        cx.update(gpui_component::init);
+        let mut app = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| NativeMarkdownApp::new(None, window, cx));
+            app = Some(view.clone());
+            gpui_component::Root::new(view, window, cx)
+        });
+        let app = app.unwrap();
+        cx.simulate_resize(size(px(900.0), px(780.0)));
+        app.update(cx, |app, cx| {
+            app.settings_open = true;
+            cx.notify();
+        });
+        draw_app(cx);
+        let done = cx.debug_bounds("close-settings").unwrap();
+        let nav = cx.debug_bounds("settings-section-2").unwrap();
+        for (selector, expected) in [
+            (
+                "settings-section-2",
+                crate::paste::DownloadTimeouts::default(),
+            ),
+            (
+                "download-timeout-0-15",
+                crate::paste::DownloadTimeouts {
+                    connect_secs: 15,
+                    image_secs: 10,
+                    batch_secs: 20,
+                },
+            ),
+            (
+                "download-timeout-1-30",
+                crate::paste::DownloadTimeouts {
+                    connect_secs: 15,
+                    image_secs: 30,
+                    batch_secs: 20,
+                },
+            ),
+            (
+                "download-timeout-2-60",
+                crate::paste::DownloadTimeouts {
+                    connect_secs: 15,
+                    image_secs: 30,
+                    batch_secs: 60,
+                },
+            ),
+            (
+                "settings-section-1",
+                crate::paste::DownloadTimeouts {
+                    connect_secs: 15,
+                    image_secs: 30,
+                    batch_secs: 60,
+                },
+            ),
+            (
+                "settings-section-0",
+                crate::paste::DownloadTimeouts {
+                    connect_secs: 15,
+                    image_secs: 30,
+                    batch_secs: 60,
+                },
+            ),
+            (
+                "settings-section-2",
+                crate::paste::DownloadTimeouts {
+                    connect_secs: 15,
+                    image_secs: 30,
+                    batch_secs: 60,
+                },
+            ),
+            (
+                "reset-download-timeouts",
+                crate::paste::DownloadTimeouts::default(),
+            ),
+        ] {
+            let position = cx.debug_bounds(selector).unwrap().center();
+            cx.simulate_mouse_down(position, gpui::MouseButton::Left, Modifiers::default());
+            cx.simulate_mouse_up(position, gpui::MouseButton::Left, Modifiers::default());
+            draw_app(cx);
+            assert_eq!(cx.debug_bounds("close-settings").unwrap(), done);
+            assert_eq!(cx.debug_bounds("settings-section-2").unwrap(), nav);
+            app.read_with(cx, |app, _| {
+                assert_eq!(app.download_timeouts, expected);
+                assert!(app.document.content.is_empty());
+                assert!(!app.document.is_dirty());
+            });
+        }
+    }
+
+    #[gpui::test]
     fn markdown_controls_refresh_analysis_without_editing_source(cx: &mut TestAppContext) {
         cx.update(gpui_component::init);
         let directory = tempfile::tempdir_in("tmp").unwrap();
@@ -3698,6 +3877,7 @@ mod tests {
             assert!(!app.preserve_line_breaks);
             assert_eq!(app.outline[0].title, "Title");
             app.settings_open = true;
+            app.settings_section = 1;
             cx.notify();
         });
         for selector in [
@@ -3758,6 +3938,7 @@ mod tests {
         draw_app(cx);
         app.update(cx, |app, cx| {
             app.settings_open = true;
+            app.settings_section = 1;
             cx.notify();
         });
         draw_app(cx);

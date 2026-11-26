@@ -23,6 +23,23 @@ const MAX_IMAGES: usize = 50;
 #[cfg(all(windows, not(test)))]
 const MAX_CLIPBOARD: usize = 16 * 1024 * 1024;
 
+/// Session-only limits captured when a background import starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DownloadTimeouts {
+    pub connect_secs: u64,
+    pub image_secs: u64,
+    pub batch_secs: u64,
+}
+impl Default for DownloadTimeouts {
+    fn default() -> Self {
+        Self {
+            connect_secs: 5,
+            image_secs: 10,
+            batch_secs: 20,
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct Snapshot {
     pub html: Option<String>,
@@ -571,8 +588,13 @@ impl Import {
         !self.pictures.is_empty()
     }
 
-    pub fn finish(self, path: &Path, cancelled: Arc<AtomicBool>) -> Finished {
-        let deadline = Instant::now() + Duration::from_secs(20);
+    pub fn finish(
+        self,
+        path: &Path,
+        cancelled: Arc<AtomicBool>,
+        timeouts: DownloadTimeouts,
+    ) -> Finished {
+        let deadline = Instant::now() + Duration::from_secs(timeouts.batch_secs);
         let shared = Arc::new(Mutex::new((
             0usize,
             0usize,
@@ -581,8 +603,8 @@ impl Import {
         let results = Mutex::new(Vec::new());
         let client = reqwest::blocking::Client::builder()
             .retry(reqwest::retry::never())
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(10))
+            .connect_timeout(Duration::from_secs(timeouts.connect_secs))
+            .timeout(Duration::from_secs(timeouts.image_secs))
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
                 if attempt.previous().len() >= 5 || external_url(attempt.url().as_str()).is_none() {
                     attempt.stop()
@@ -617,7 +639,14 @@ impl Import {
                     } else if cancelled.load(Ordering::Acquire) {
                         Err("已取消".into())
                     } else {
-                        load(&picture.source, client, deadline, cancelled).and_then(|bytes| {
+                        load(
+                            &picture.source,
+                            client,
+                            deadline,
+                            cancelled,
+                            Duration::from_secs(timeouts.image_secs),
+                        )
+                        .and_then(|bytes| {
                             let mut state = shared.lock().unwrap();
                             let hash = format!("{:x}", Sha256::digest(&bytes));
                             let is_new = !state.2.contains_key(&hash);
@@ -771,6 +800,7 @@ fn load(
     client: &reqwest::blocking::Client,
     deadline: Instant,
     cancel: &AtomicBool,
+    image_timeout: Duration,
 ) -> Result<Vec<u8>, String> {
     let bytes = match source {
         Source::Bytes(bytes) => {
@@ -814,11 +844,11 @@ fn load(
                 }
                 let response = client
                     .get(url)
-                    .timeout(remaining.min(Duration::from_secs(10)))
+                    .timeout(remaining.min(image_timeout))
                     .send()
                     .map_err(|e| {
                         if e.is_timeout() && e.is_connect() {
-                            "连接超时（5秒）"
+                            "连接超时"
                         } else if e.is_timeout() {
                             "下载超时"
                         } else {
@@ -1114,6 +1144,7 @@ mod tests {
         let result = import.finish(
             &directory.path().join("svg.md"),
             Arc::new(AtomicBool::new(false)),
+            DownloadTimeouts::default(),
         );
         assert_eq!(result.failed, 0);
         assert!(result.markdown.contains("svg.assets/nm-"));
@@ -1178,7 +1209,11 @@ mod tests {
         }
     }
     fn finish(snapshot: Snapshot, path: &Path) -> Finished {
-        Import::prepare(snapshot).finish(path, Arc::new(AtomicBool::new(false)))
+        Import::prepare(snapshot).finish(
+            path,
+            Arc::new(AtomicBool::new(false)),
+            DownloadTimeouts::default(),
+        )
     }
     #[test]
     fn cf_html_uses_byte_offsets_and_marker_fallback() {
@@ -1264,8 +1299,11 @@ mod tests {
             images: vec![png()],
             ..Default::default()
         };
-        let result = Import::prepare(snapshot)
-            .finish(&folder.path().join("a.md"), Arc::new(AtomicBool::new(true)));
+        let result = Import::prepare(snapshot).finish(
+            &folder.path().join("a.md"),
+            Arc::new(AtomicBool::new(true)),
+            DownloadTimeouts::default(),
+        );
         assert_eq!(result.failed, 1);
         assert!(!folder.path().join("a.assets").exists());
     }
@@ -1394,11 +1432,50 @@ mod tests {
             &client,
             start + Duration::from_millis(80),
             &cancel,
+            Duration::from_secs(10),
         );
         assert!(result.is_err());
         assert!(start.elapsed() < Duration::from_millis(250));
         server.join().unwrap();
     }
+    #[test]
+    fn configured_image_and_batch_timeouts_reach_downloads() {
+        use std::net::TcpListener;
+        for (image_secs, batch_secs) in [(1, 5), (5, 1)] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 4096];
+                let _ = stream.read(&mut request);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n",
+                );
+                std::thread::sleep(Duration::from_millis(1800));
+            });
+            let folder = tempfile::tempdir().unwrap();
+            let import = Import::prepare(html(&format!(
+                "<img src='http://{address}/slow' alt='slow'>"
+            )));
+            let start = Instant::now();
+            let result = import.finish(
+                &folder.path().join("slow.md"),
+                Arc::new(AtomicBool::new(false)),
+                DownloadTimeouts {
+                    connect_secs: 5,
+                    image_secs,
+                    batch_secs,
+                },
+            );
+            assert!(start.elapsed() < Duration::from_millis(1600));
+            assert_eq!(result.failed, 1);
+            assert!(result.markdown.contains("图片下载失败"));
+            assert!(result.markdown.contains(&format!("http://{address}/slow")));
+            assert!(!folder.path().join("slow.assets").exists());
+            server.join().unwrap();
+        }
+    }
+
     #[test]
     fn image_count_limit_keeps_failure_locations() {
         let folder = tempfile::tempdir().unwrap();
